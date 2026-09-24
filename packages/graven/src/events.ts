@@ -1,64 +1,74 @@
 import type { z } from "zod";
 import { DuplicateEventFamilyError, InvalidEventPayloadError, UnknownEventRevisionError, UnknownEventTypeError } from "./errors.js";
-import type { InsertableEvent, TimedEvent } from "./types.js";
+import type { JsonValue } from "./json.js";
+import type { TimedEvent } from "./types.js";
 
-export type EventFamily<TType extends string, TPayload, TInput = TPayload> = {
-  readonly eventType: TType;
+export type Upcaster<P> = { readonly revision: number; readonly parse: z.ZodType<P, unknown> };
+
+export type EventFamily<T extends string, S extends z.ZodType<JsonValue, unknown>> = {
+  readonly eventType: T;
   readonly latestRevision: number;
   /** Payload schema: validates an insert, and parses a row stored at latestRevision. */
-  readonly latest: z.ZodType<TPayload, TInput>;
-  /** One entry per older revision: parses that revision's stored payload and transforms it to the latest shape. */
-  readonly previous?: readonly {
-    readonly revision: number;
-    readonly parse: z.ZodType<TPayload>;
-  }[];
+  readonly latest: S;
+  /** One entry per older revision: parses that revision's stored payload into the latest shape. */
+  readonly previous?: readonly Upcaster<z.output<S>>[];
 };
 
+/** Any family: the constraint every event-set parameter takes. */
+export type AnyEventFamily = EventFamily<string, z.ZodType<JsonValue, unknown>>;
+
+export type EventFamilies = readonly AnyEventFamily[];
+
 /** Identity; exists so `eventType` infers as a literal and the schema's input type is kept. */
-export function defineEvent<const TType extends string, TPayload, TInput>(
-  family: EventFamily<TType, TPayload, TInput>,
-): EventFamily<TType, TPayload, TInput> {
+export function defineEvent<const T extends string, S extends z.ZodType<JsonValue, unknown>>(
+  family: EventFamily<T, S>,
+): EventFamily<T, S> {
   return family;
 }
 
-/** Any family: the constraint every event-set parameter takes. */
-export type AnyEventFamily = EventFamily<string, unknown, unknown>;
+export type EventTypeOf<C extends EventFamilies> = C[number]["eventType"];
 
-export type EventOf<C extends readonly AnyEventFamily[]> = {
-  [F in C[number] as F["eventType"]]: {
-    readonly eventType: F["eventType"];
-    readonly payload: F extends EventFamily<string, infer P, unknown> ? P : never;
-  };
-}[C[number]["eventType"]];
+export type FamilyOf<C extends EventFamilies, K extends EventTypeOf<C>> = Extract<C[number], { readonly eventType: K }>;
 
-export type InsertableEventOf<C extends readonly AnyEventFamily[]> = {
-  [F in C[number] as F["eventType"]]: {
-    readonly eventType: F["eventType"];
-    readonly payload: F extends EventFamily<string, unknown, infer I> ? I : never;
-  };
-}[C[number]["eventType"]];
+type UpcasterSchema<F extends AnyEventFamily> = NonNullable<F["previous"]>[number]["parse"];
 
-export type ParsedInsertable = {
-  readonly eventType: string;
+/** The upcaster half equals the latest half for any concrete C; it is spelled out so the generic
+ * decoder typechecks. Gated on `previous` being a declared key: an inline family literal without
+ * it would otherwise widen the union to `unknown`. */
+export type PayloadOf<C extends EventFamilies, K extends EventTypeOf<C>> =
+  | z.output<FamilyOf<C, K>["latest"]>
+  | ("previous" extends keyof FamilyOf<C, K> ? z.output<UpcasterSchema<FamilyOf<C, K>>> : never);
+
+export type InputOf<C extends EventFamilies, K extends EventTypeOf<C>> = z.input<FamilyOf<C, K>["latest"]>;
+
+export type EventOf<C extends EventFamilies, K extends EventTypeOf<C> = EventTypeOf<C>> = {
+  [P in K]: { readonly eventType: P; readonly payload: PayloadOf<C, P> };
+}[K];
+
+export type InsertableEventOf<C extends EventFamilies, K extends EventTypeOf<C> = EventTypeOf<C>> = {
+  [P in K]: { readonly eventType: P; readonly payload: InputOf<C, P> };
+}[K];
+
+export type ParsedInsertable<C extends EventFamilies> = {
   readonly eventRevision: number;
-  readonly payload: unknown;
+  readonly event: EventOf<C>;
 };
 
 export type ParsedStoredRow = {
   readonly eventType: string;
   readonly eventRevision: number;
-  readonly payload: unknown;
+  readonly payload: JsonValue;
   readonly occurredAt: Date;
 };
 
-export interface EventRegistry<C extends readonly AnyEventFamily[]> {
-  readonly types: readonly string[];
-  latestRevision(eventType: string): number;
-  parseInsertable(input: InsertableEvent): ParsedInsertable;
+export interface EventRegistry<C extends EventFamilies> {
+  readonly types: readonly EventTypeOf<C>[];
+  latestRevision(eventType: EventTypeOf<C>): number;
+  parseInsertable(input: InsertableEventOf<C>): ParsedInsertable<C>;
   parseStored(row: ParsedStoredRow): TimedEvent<EventOf<C>>;
 }
 
-function validateFamilies(families: readonly AnyEventFamily[]): void {
+function validateFamilies(families: EventFamilies): void {
   const seen = new Set<string>();
   for (const family of families) {
     if (seen.has(family.eventType)) {
@@ -89,70 +99,98 @@ function validateFamilies(families: readonly AnyEventFamily[]): void {
   }
 }
 
-export function defineEvents<const C extends readonly AnyEventFamily[]>(
-  families: C,
-): EventRegistry<C> {
+function isFamilyOf<C extends EventFamilies, K extends EventTypeOf<C>>(
+  family: C[number],
+  eventType: K,
+): family is FamilyOf<C, K> {
+  return family.eventType === eventType;
+}
+
+function parsePayload<S extends z.ZodType>(
+  schema: S,
+  value: unknown,
+  eventType: string,
+  revision: number,
+): z.output<S> {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new InvalidEventPayloadError(eventType, revision, result.error.issues);
+  }
+  return result.data;
+}
+
+export function defineEvents<const C extends EventFamilies>(families: C): EventRegistry<C> {
   validateFamilies(families);
 
-  const byType = new Map<string, AnyEventFamily>();
-  for (const family of families) {
-    byType.set(family.eventType, family);
-  }
+  const byType = new Map<string, C[number]>(families.map((family) => [family.eventType, family]));
 
-  const types = families.map((f) => f.eventType);
-
-  function getFamily(eventType: string): AnyEventFamily {
+  function familyFor<K extends EventTypeOf<C>>(eventType: K): FamilyOf<C, K> {
     const family = byType.get(eventType);
-    if (!family) {
+    if (family === undefined || !isFamilyOf<C, K>(family, eventType)) {
       throw new UnknownEventTypeError(eventType);
     }
     return family;
   }
 
+  const isEventType = (value: string): value is EventTypeOf<C> => byType.has(value);
+
+  function decodeLatest<K extends EventTypeOf<C>>(input: InsertableEventOf<C, K>): ParsedInsertable<C> {
+    const family = familyFor(input.eventType);
+    const event: EventOf<C, K> = {
+      eventType: input.eventType,
+      payload: parsePayload<FamilyOf<C, K>["latest"]>(
+        family.latest,
+        input.payload,
+        family.eventType,
+        family.latestRevision,
+      ),
+    };
+    return { eventRevision: family.latestRevision, event };
+  }
+
+  function decodeStored<K extends EventTypeOf<C>>(eventType: K, row: ParsedStoredRow): TimedEvent<EventOf<C, K>> {
+    const family = familyFor(eventType);
+
+    if (row.eventRevision === family.latestRevision) {
+      const payload = parsePayload<FamilyOf<C, K>["latest"]>(
+        family.latest,
+        row.payload,
+        family.eventType,
+        family.latestRevision,
+      );
+      return { eventType, payload, occurredAt: row.occurredAt };
+    }
+
+    const previous: NonNullable<FamilyOf<C, K>["previous"]> = family.previous ?? [];
+    const entry = previous.find((candidate) => candidate.revision === row.eventRevision);
+    if (!entry) {
+      throw new UnknownEventRevisionError(family.eventType, row.eventRevision);
+    }
+    const payload = parsePayload<UpcasterSchema<FamilyOf<C, K>>>(
+      entry.parse,
+      row.payload,
+      family.eventType,
+      row.eventRevision,
+    );
+    return { eventType, payload, occurredAt: row.occurredAt };
+  }
+
   return {
-    types,
+    types: families.map((family) => family.eventType),
 
     latestRevision(eventType) {
-      return getFamily(eventType).latestRevision;
+      return familyFor(eventType).latestRevision;
     },
 
     parseInsertable(input) {
-      const family = getFamily(input.eventType);
-      const result = family.latest.safeParse(input.payload);
-      if (!result.success) {
-        throw new InvalidEventPayloadError(family.eventType, family.latestRevision, result.error.issues);
-      }
-      return {
-        eventType: family.eventType,
-        eventRevision: family.latestRevision,
-        payload: result.data,
-      };
+      return decodeLatest(input);
     },
 
     parseStored(row) {
-      const family = getFamily(row.eventType);
-
-      let schema: z.ZodType<unknown>;
-      if (row.eventRevision === family.latestRevision) {
-        schema = family.latest;
-      } else {
-        const entry = (family.previous ?? []).find((p) => p.revision === row.eventRevision);
-        if (!entry) {
-          throw new UnknownEventRevisionError(family.eventType, row.eventRevision);
-        }
-        schema = entry.parse;
+      if (!isEventType(row.eventType)) {
+        throw new UnknownEventTypeError(row.eventType);
       }
-
-      const result = schema.safeParse(row.payload);
-      if (!result.success) {
-        throw new InvalidEventPayloadError(family.eventType, row.eventRevision, result.error.issues);
-      }
-
-      return {
-        eventType: family.eventType,
-        payload: result.data,
-        occurredAt: row.occurredAt,
-      } as unknown as TimedEvent<EventOf<C>>;
+      return decodeStored(row.eventType, row);
     },
   };
 }

@@ -1,10 +1,15 @@
 import type { Aggregate } from "./aggregate.js";
-import { ConcurrentModificationError, StaleStreamVersionError, StreamVersionConflictError } from "./errors.js";
-import type { AnyEventFamily, EventOf, InsertableEventOf } from "./events.js";
+import {
+  ConcurrentModificationError,
+  ProjectionAggregateMismatchError,
+  StaleStreamVersionError,
+  StreamVersionConflictError,
+} from "./errors.js";
+import type { EventFamilies, EventOf, InsertableEventOf, ParsedInsertable } from "./events.js";
 import type { EventStore } from "./store.js";
-import type { EventMetadata, EventToAppend, InsertableEvent, StoredEvent, TimedEvent } from "./types.js";
+import type { EventMetadata, EventToAppend, StoredEvent, TimedEvent } from "./types.js";
 
-export type Proposal<C extends readonly AnyEventFamily[], R> = {
+export type Proposal<C extends EventFamilies, R> = {
   readonly emit: readonly InsertableEventOf<C>[];
   readonly result: R;
 };
@@ -38,7 +43,7 @@ function isRetryable(error: unknown): boolean {
   return error instanceof StaleStreamVersionError || error instanceof StreamVersionConflictError;
 }
 
-async function attemptDecide<S, C extends readonly AnyEventFamily[], R, W>(
+async function attemptDecide<S, C extends EventFamilies, R, W>(
   store: EventStore<W>,
   aggregate: Aggregate<S, C>,
   streamId: string,
@@ -53,6 +58,12 @@ async function attemptDecide<S, C extends readonly AnyEventFamily[], R, W>(
     const matchingProjections = runProjections
       ? tx.projections.filter((p) => p.aggregate.type === aggregate.type)
       : [];
+
+    for (const projection of matchingProjections) {
+      if (projection.aggregate !== aggregate) {
+        throw new ProjectionAggregateMismatchError(projection.name, aggregate.type);
+      }
+    }
 
     for (const projection of matchingProjections) {
       await tx.lockProjectionShared(projection.name);
@@ -77,17 +88,15 @@ async function attemptDecide<S, C extends readonly AnyEventFamily[], R, W>(
       return { appended: false, reason: "refused" };
     }
 
-    const parsed = proposal.emit.map((e) => aggregate.events.parseInsertable(e as unknown as InsertableEvent));
+    const parsed: ParsedInsertable<C>[] = proposal.emit.map((entry) => aggregate.events.parseInsertable(entry));
     const occurredAt = occurredAtOverride ?? clock();
 
     // Walk cumulatively, dropping any event whose evolve is a no-op when the aggregate opts in.
     let state = initialState;
-    const survivors: typeof parsed = [];
+    const survivors: ParsedInsertable<C>[] = [];
     const appended: TimedEvent<EventOf<C>>[] = [];
     for (const entry of parsed) {
-      const timed = { eventType: entry.eventType, payload: entry.payload, occurredAt } as unknown as TimedEvent<
-        EventOf<C>
-      >;
+      const timed: TimedEvent<EventOf<C>> = { ...entry.event, occurredAt };
       const nextState = aggregate.evolve(state, timed);
       if (aggregate.elideNoOps && nextState === state) {
         continue;
@@ -108,9 +117,9 @@ async function attemptDecide<S, C extends readonly AnyEventFamily[], R, W>(
 
     const toAppend: EventToAppend[] = survivors.map((entry) => ({
       eventId: newId(),
-      eventType: entry.eventType,
+      eventType: entry.event.eventType,
       eventRevision: entry.eventRevision,
-      payload: entry.payload,
+      payload: entry.event.payload,
       occurredAt,
     }));
 
@@ -122,16 +131,11 @@ async function attemptDecide<S, C extends readonly AnyEventFamily[], R, W>(
       metadata: { correlationId: newId(), ...metadata },
     });
 
+    const sealed = aggregate.seal({ state, appended });
     for (const projection of matchingProjections) {
       try {
         await tx.savepoint(() =>
-          projection.apply({
-            streamId,
-            state,
-            appended: appended as never,
-            version: result.newVersion,
-            writer: tx.writer,
-          }),
+          projection.project({ streamId, version: result.newVersion, sealed, writer: tx.writer }),
         );
       } catch (error) {
         tx.onProjectionError(error, { projection: projection.name, streamId });
@@ -148,11 +152,11 @@ async function attemptDecide<S, C extends readonly AnyEventFamily[], R, W>(
 }
 
 /** Keys an emitted entry may carry; anything else, such as `eventRevision`, is the store's to set. */
-type ExactEmit<P, C extends readonly AnyEventFamily[]> = P extends { readonly emit: readonly (infer E)[] }
+type ExactEmit<P, C extends EventFamilies> = P extends { readonly emit: readonly (infer E)[] }
   ? readonly { readonly [K in keyof E]: K extends keyof InsertableEventOf<C> ? E[K] : never }[]
   : never;
 
-export async function decide<S, C extends readonly AnyEventFamily[], R, W, P extends Proposal<C, R> = Proposal<C, R>>(
+export async function decide<S, C extends EventFamilies, R, W, const P extends Proposal<C, R> = Proposal<C, R>>(
   store: EventStore<W>,
   aggregate: Aggregate<S, C>,
   streamId: string,

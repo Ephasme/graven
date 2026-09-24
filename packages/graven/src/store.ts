@@ -9,7 +9,7 @@ export type ReadStreamOptions = {
 export type GlobalReadOptions = {
   readonly fromPosition: number; // exclusive: rows with global_position > fromPosition
   readonly limit: number;
-  readonly aggregateType?: string;
+  readonly aggregateType?: string | undefined;
 };
 
 /**
@@ -63,7 +63,7 @@ export interface EventStore<W = void> {
   savepoint<T>(fn: () => Promise<T>): Promise<T>;
 
   /** Registered inline projections, in registration order. */
-  readonly projections: readonly Projection<any, any, W>[];
+  readonly projections: readonly Projection<W>[];
 
   readonly onProjectionError: (
     error: unknown,

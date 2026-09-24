@@ -1,7 +1,17 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, assert, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { decide, defineAggregate, defineEvent, defineProjection, DuplicateEventIdError, GravenError, rebuild } from "@les-sherpas/graven";
-import { createSqlEventStore, type SqlEventStore } from "@les-sherpas/graven-sql";
+import {
+  decide,
+  defineAggregate,
+  defineEvent,
+  defineProjection,
+  DuplicateEventIdError,
+  GravenError,
+  InvalidStoredRowError,
+  ProjectionAggregateMismatchError,
+  rebuild,
+} from "@les-sherpas/graven";
+import { createSqlEventStore, type GravenDatabase, type SqlEventStore } from "@les-sherpas/graven-sql";
 import { Kysely, MysqlDialect, PostgresDialect, sql } from "kysely";
 import mysql2 from "mysql2";
 import pg from "pg";
@@ -16,11 +26,13 @@ if (!MYSQL_URL) {
   throw new Error("GRAVEN_MYSQL_URL must be set for graven-sql integration tests");
 }
 
-const pgDb = new Kysely<any>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: POSTGRES_URL }) }) });
-// No `timezone` option: the store must keep `occurred_at` right whatever the pool converts.
-const mysqlDb = new Kysely<any>({ dialect: new MysqlDialect({ pool: mysql2.createPool({ uri: MYSQL_URL }) }) });
+type TestDatabase = GravenDatabase & { widgets_read: { id: string; name: string } };
 
-const TABLES = ["graven_events", "graven_streams", "graven_checkpoints", "graven_locks"];
+const pgDb = new Kysely<TestDatabase>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: POSTGRES_URL }) }) });
+// No `timezone` option: the store must keep `occurred_at` right whatever the pool converts.
+const mysqlDb = new Kysely<TestDatabase>({ dialect: new MysqlDialect({ pool: mysql2.createPool({ uri: MYSQL_URL }) }) });
+
+const TABLES = ["graven_events", "graven_streams", "graven_checkpoints", "graven_locks"] as const satisfies readonly (keyof GravenDatabase)[];
 
 const cases = [
   {
@@ -38,7 +50,7 @@ const cases = [
 ];
 
 describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
-  let store: SqlEventStore<any>;
+  let store: SqlEventStore<TestDatabase>;
 
   beforeEach(async () => {
     store = createSqlEventStore({ db });
@@ -208,10 +220,10 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
     const widget = defineAggregate({
       type: "widget",
       events: [created],
-      initialState: null as { name: string } | null,
-      evolve: (_state, e) => ({ name: e.payload.name }),
+      initialState: null,
+      evolve: (_state: { name: string } | null, e): { name: string } => ({ name: e.payload.name }),
     });
-    const projection = defineProjection<{ name: string } | null, [typeof created], Kysely<any>>({
+    const projection = defineProjection<{ name: string } | null, readonly [typeof created], Kysely<TestDatabase>>({
       name: "widgets",
       aggregate: widget,
       apply: async ({ streamId, state, writer }) => {
@@ -236,6 +248,32 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
     expect(await readTable()).toEqual([{ id: "w1", name: "a" }, { id: "w2", name: "b" }]);
 
     await db.schema.dropTable("widgets_read").execute();
+  });
+
+  it("decide rejects with ProjectionAggregateMismatchError when a projection was built over a different aggregate object", async () => {
+    const created = defineEvent({ eventType: "widget.created" as const, latestRevision: 1, latest: z.object({ name: z.string() }) });
+    function makeWidget() {
+      return defineAggregate({
+        type: "widget",
+        events: [created],
+        initialState: null,
+        evolve: (_state: { name: string } | null, e): { name: string } => ({ name: e.payload.name }),
+      });
+    }
+    const registeredAgainst = makeWidget();
+    const decidedWith = makeWidget();
+    const projection = defineProjection({
+      name: "mismatched",
+      aggregate: registeredAgainst,
+      apply: async () => {},
+    });
+    const mismatched = createSqlEventStore({ db, projections: [projection] });
+
+    await expect(
+      decide(mismatched, decidedWith, "w1", () => ({ emit: [{ eventType: "widget.created" as const, payload: { name: "a" } }], result: null })),
+    ).rejects.toThrow(ProjectionAggregateMismatchError);
+
+    expect((await store.readStream("w1")).length).toBe(0);
   });
 
   it("a throw inside a savepoint rolls back its writes while the append survives", async () => {
@@ -357,6 +395,27 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
 
     expect(order).toEqual(["decide-projected", "rebuild-locked"]);
     expect(await scratchRow("row:s1")).toBeDefined();
+  });
+
+  it("readStream rejects with InvalidStoredRowError when a row's metadata is valid JSON but not a valid EventMetadata", async () => {
+    await store.append({
+      streamId: "s1",
+      aggregateType: "widget",
+      expected: { kind: "no-stream" },
+      events: [event("e1")],
+      metadata: { correlationId: "c1" },
+    });
+
+    await sql`update graven_events set metadata = ${"{}"} where stream_id = ${"s1"}`.execute(db);
+
+    let caught: unknown;
+    try {
+      await store.readStream("s1");
+    } catch (error) {
+      caught = error;
+    }
+    assert(caught instanceof InvalidStoredRowError);
+    expect(caught.context.table).toBe("graven_events");
   });
 });
 

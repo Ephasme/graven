@@ -1,10 +1,19 @@
+import { z } from "zod";
+import type { JsonValue } from "./json.js";
+
 export type EventMetadata = {
   readonly correlationId: string;
   readonly causationId?: string;
   readonly actor?: string;
 };
 
-export type BaseEvent = { readonly eventType: string; readonly payload: unknown };
+export const eventMetadataSchema: z.ZodType<EventMetadata> = z.object({
+  correlationId: z.string(),
+  causationId: z.string().exactOptional(),
+  actor: z.string().exactOptional(),
+});
+
+export type BaseEvent = { readonly eventType: string; readonly payload: JsonValue };
 
 export type TimedEvent<TEvent> = TEvent & { readonly occurredAt: Date };
 
@@ -20,8 +29,6 @@ export type StoredEvent<TEvent extends BaseEvent = BaseEvent> = {
   readonly recordedAt: Date;
 };
 
-export type InsertableEvent = { readonly eventType: string; readonly payload: unknown };
-
 export type ExpectedVersion =
   | { readonly kind: "no-stream" }
   | { readonly kind: "exact"; readonly version: number };
@@ -31,7 +38,7 @@ export type EventToAppend = {
   readonly eventId: string;
   readonly eventType: string;
   readonly eventRevision: number;
-  readonly payload: unknown;
+  readonly payload: JsonValue;
   readonly occurredAt: Date;
 };
 

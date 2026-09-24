@@ -8,6 +8,7 @@ import {
   resolveInstall,
   revokeAssignment,
   withdrawAssignment,
+  type AssignmentState,
 } from "./aggregate.js";
 import { assignmentsProjection } from "./projection.js";
 
@@ -16,8 +17,10 @@ const GROUP_ID = "22222222-2222-4222-8222-222222222222";
 const UDID = "device-1";
 const ACKNOWLEDGED = "Acknowledged";
 
+type Tables = { readonly assignments: AssignmentState };
+
 function makeStore() {
-  return createInMemoryStore({ projections: [assignmentsProjection] });
+  return createInMemoryStore<Tables>({ projections: [assignmentsProjection] });
 }
 
 const streamId = (profileId: string, udid: string) => `${profileId.toLowerCase()}:${udid}`;
@@ -32,7 +35,7 @@ describe("assignment aggregate (ported from sherpas-flock)", () => {
     );
 
     expect(result.appended).toBe(true);
-    const row = store.writer.tables.get("assignments")?.get(stream) as { status: string } | undefined;
+    const row = store.writer.table("assignments").get(stream);
     expect(row?.status).toBe("pending");
   });
 
@@ -51,7 +54,7 @@ describe("assignment aggregate (ported from sherpas-flock)", () => {
     const withdrawResult = await decide(store, assignment, stream, (state) => withdrawAssignment(state, GROUP_ID));
     expect(withdrawResult).toEqual({ appended: false, reason: "refused" });
 
-    const row = store.writer.tables.get("assignments")?.get(stream) as { status: string; sourceGroupId: string | null } | undefined;
+    const row = store.writer.table("assignments").get(stream);
     expect(row?.sourceGroupId).toBeNull();
     expect(row?.status).toBe("pending");
   });
@@ -67,7 +70,7 @@ describe("assignment aggregate (ported from sherpas-flock)", () => {
     const result = await decide(store, assignment, stream, (state) => withdrawAssignment(state, GROUP_ID));
     expect(result.appended).toBe(true);
 
-    const row = store.writer.tables.get("assignments")?.get(stream) as { status: string } | undefined;
+    const row = store.writer.table("assignments").get(stream);
     expect(row?.status).toBe("removed");
   });
 
@@ -80,7 +83,7 @@ describe("assignment aggregate (ported from sherpas-flock)", () => {
     );
     await decide(store, assignment, stream, () => resolveInstall("cmd-1", ACKNOWLEDGED, ACKNOWLEDGED));
 
-    const row = store.writer.tables.get("assignments")?.get(stream) as { status: string } | undefined;
+    const row = store.writer.table("assignments").get(stream);
     expect(row?.status).toBe("installed");
   });
 
@@ -112,13 +115,13 @@ describe("assignment aggregate (ported from sherpas-flock)", () => {
     await decide(store, assignment, stream, (state) => revokeAssignment(state));
 
     // After revocation, the projection has no live row for this stream.
-    expect(store.writer.tables.get("assignments")?.has(stream)).toBe(false);
+    expect(store.writer.table("assignments").has(stream)).toBe(false);
 
     const result = await decide(store, assignment, stream, (state) =>
       requestAssignment(state, { profileId: PROFILE_ID, udid: UDID, sourceGroupId: null, commandUuid: "cmd-2", error: null }, () => "55555555-5555-4555-8555-555555555555"),
     );
     expect(result.appended).toBe(true);
-    const row = store.writer.tables.get("assignments")?.get(stream) as { assignmentId: string } | undefined;
+    const row = store.writer.table("assignments").get(stream);
     expect(row?.assignmentId).toBe("55555555-5555-4555-8555-555555555555");
   });
 });

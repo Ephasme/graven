@@ -1,5 +1,8 @@
 import {
   DuplicateEventIdError,
+  eventMetadataSchema,
+  InvalidStoredRowError,
+  jsonValueSchema,
   StaleStreamVersionError,
   StreamVersionConflictError,
 } from "@les-sherpas/graven";
@@ -9,6 +12,7 @@ import type {
   EventMetadata,
   EventStore,
   GlobalReadOptions,
+  JsonValue,
   Projection,
   ReadStreamOptions,
   StoredEvent,
@@ -16,7 +20,20 @@ import type {
 import { utc } from "@date-fns/utc";
 import { format, parseISO } from "date-fns";
 import dbErrors from "db-errors";
-import { type Kysely, MysqlAdapter, PostgresAdapter, sql } from "kysely";
+import {
+  MysqlAdapter,
+  PostgresAdapter,
+  createQueryId,
+  sql,
+  type Compilable,
+  type InsertQueryBuilder,
+  type Kysely,
+  type QueryResult,
+  type RootOperationNode,
+  type Transaction,
+} from "kysely";
+import { z } from "zod";
+import { createQueryBuilder, namesFor, type GravenDatabase, type GravenTable } from "./schema.js";
 import { resolveTableNames, type TableNames } from "./tables.js";
 
 export type SqlEventStore<DB> = EventStore<Kysely<DB>> & {
@@ -25,18 +42,115 @@ export type SqlEventStore<DB> = EventStore<Kysely<DB>> & {
 
 export type CreateSqlEventStoreOptions<DB> = {
   /** A `Kysely` over `PostgresDialect` or `MysqlDialect`, or a caller's `Transaction` to join. */
-  readonly db: Kysely<DB>;
+  readonly db: Kysely<DB> | Transaction<DB>;
   readonly tables?: Partial<TableNames>;
   readonly clock?: () => Date;
-  readonly projections?: readonly Projection<any, any, Kysely<DB>>[];
+  readonly projections?: readonly Projection<Kysely<DB>>[];
   readonly onProjectionError?: (
     error: unknown,
     context: { readonly projection: string; readonly streamId: string },
   ) => void;
 };
 
+/** Compiles and runs a graven query through the caller's executor: its plugins, schema and
+ * transaction apply. */
+async function execute<DB>(
+  db: Kysely<DB>,
+  query: { toOperationNode(): RootOperationNode },
+): Promise<QueryResult<unknown>> {
+  const executor = db.getExecutor();
+  const queryId = createQueryId();
+  return executor.executeQuery(executor.compileQuery(executor.transformQuery(query.toOperationNode(), queryId), queryId));
+}
+
+/** `schema` must accept every row Kysely types the query as returning, so the decoder cannot
+ * drift from the select list. */
+async function selectRows<DB, O, S extends z.ZodType>(
+  db: Kysely<DB>,
+  table: GravenTable,
+  query: { toOperationNode(): RootOperationNode } & Compilable<O>,
+  schema: S & ([O] extends [z.input<S>] ? unknown : { readonly rowMismatch: O }),
+): Promise<z.output<S>[]> {
+  const result = z.array(schema).safeParse((await execute(db, query)).rows);
+  if (!result.success) throw new InvalidStoredRowError(table, result.error.issues);
+  return result.data;
+}
+
+const dbInteger = z.union([
+  z.int(),
+  z.bigint().transform(Number).pipe(z.int()),
+  z.string().regex(/^-?\d+$/).transform(Number).pipe(z.int()),
+]);
+
+const jsonText = z.string().transform((text, ctx): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    ctx.issues.push({ code: "custom", message: "column holds malformed JSON", input: text });
+    return z.NEVER;
+  }
+});
+
+const payloadColumn: z.ZodType<JsonValue, string> = jsonText.pipe(jsonValueSchema);
+const metadataColumn: z.ZodType<EventMetadata, string> = jsonText.pipe(eventMetadataSchema);
+
+function rejectTimestamp(message: string) {
+  return (value: Date | string, ctx: z.core.$RefinementCtx): never => {
+    ctx.issues.push({ code: "custom", message, input: value });
+    return z.NEVER;
+  };
+}
+
+const postgresTimestamp: z.ZodType<Date, Date | string> = z.union([
+  z.date(),
+  z.string().transform(rejectTimestamp("timestamptz must arrive as a Date")),
+]);
+
+const mysqlTimestamp: z.ZodType<Date, Date | string> = z.union([
+  z.string().transform((value, ctx) => {
+    const date = parseISO(value, { in: utc });
+    return Number.isNaN(date.getTime()) ? rejectTimestamp("invalid datetime")(value, ctx) : date;
+  }),
+  z.date().transform(rejectTimestamp("datetime must be selected as char")),
+]);
+
+const storedEventRowShape = {
+  global_position: dbInteger,
+  stream_id: z.string(),
+  stream_version: dbInteger,
+  aggregate_type: z.string(),
+  event_id: z.string(),
+  event_type: z.string(),
+  event_revision: dbInteger,
+  payload: payloadColumn,
+  metadata: metadataColumn,
+};
+
+function storedEventRowSchema(timestamp: z.ZodType<Date, Date | string>) {
+  return z
+    .object({ ...storedEventRowShape, occurred_at: timestamp, recorded_at: timestamp })
+    .transform(
+      (row): StoredEvent => ({
+        globalPosition: row.global_position,
+        streamId: row.stream_id,
+        streamVersion: row.stream_version,
+        aggregateType: row.aggregate_type,
+        eventId: row.event_id,
+        eventRevision: row.event_revision,
+        event: { eventType: row.event_type, payload: row.payload, occurredAt: row.occurred_at },
+        metadata: row.metadata,
+        recordedAt: row.recorded_at,
+      }),
+    );
+}
+
+/** The row `selectRows` must be handed for a `StoredEvent` to decode: typing the schema by its
+ * input keeps the drift guard live, so a select list missing a column fails to compile. */
+type StoredEventRow = z.input<ReturnType<typeof storedEventRowSchema>>;
+
 /** What differs between the two databases once Kysely has compiled the query. */
 type Flavor = {
+  readonly kind: "postgres" | "mysql";
   readonly keyType: "text" | "varchar(255)";
   readonly jsonType: "jsonb" | "json";
   readonly timestampType: "timestamptz" | "datetime(3)";
@@ -47,11 +161,11 @@ type Flavor = {
   /** Kysely compiles `forShare()` to `for share`, which MariaDB rejects. */
   readonly shareLock: ReturnType<typeof sql>;
   readonly writeTimestamp: (value: Date) => Date | string;
-  readonly readTimestamp: (value: unknown) => Date;
-  readonly insertIfAbsent: <Q extends { onConflict: any; ignore: any }>(query: Q, column: string) => Q;
+  readonly storedEventRow: z.ZodType<StoredEvent, StoredEventRow>;
 };
 
 const postgres: Flavor = {
+  kind: "postgres",
   keyType: "text",
   jsonType: "jsonb",
   timestampType: "timestamptz",
@@ -59,8 +173,7 @@ const postgres: Flavor = {
   timestampSelectType: "timestamptz",
   shareLock: sql`for share`,
   writeTimestamp: (value) => value,
-  readTimestamp: (value) => value as Date,
-  insertIfAbsent: (query, column) => query.onConflict((oc: any) => oc.column(column).doNothing()),
+  storedEventRow: storedEventRowSchema(postgresTimestamp),
 };
 
 // `datetime(3)` carries no zone, and mysql2 converts through the pool's `timezone` option; binding
@@ -68,6 +181,7 @@ const postgres: Flavor = {
 const UTC_DATETIME = "yyyy-MM-dd HH:mm:ss.SSS";
 
 const mysql: Flavor = {
+  kind: "mysql",
   keyType: "varchar(255)",
   jsonType: "json",
   timestampType: "datetime(3)",
@@ -75,38 +189,46 @@ const mysql: Flavor = {
   timestampSelectType: "char",
   shareLock: sql`lock in share mode`,
   writeTimestamp: (value) => format(value, UTC_DATETIME, { in: utc }),
-  readTimestamp: (value) => parseISO(value as string, { in: utc }),
-  insertIfAbsent: (query) => query.ignore(),
+  storedEventRow: storedEventRowSchema(mysqlTimestamp),
 };
 
-function flavorOf(db: Kysely<any>): Flavor {
+function insertIfAbsent<TB extends GravenTable, O>(
+  kind: Flavor["kind"],
+  query: InsertQueryBuilder<GravenDatabase, TB, O>,
+  column: keyof GravenDatabase[TB] & string,
+): InsertQueryBuilder<GravenDatabase, TB, O> {
+  return kind === "postgres" ? query.onConflict((oc) => oc.column(column).doNothing()) : query.ignore();
+}
+
+function flavorOf<DB>(db: Kysely<DB>): Flavor {
   const adapter = db.getExecutor().adapter;
   if (adapter instanceof PostgresAdapter) return postgres;
   if (adapter instanceof MysqlAdapter) return mysql;
   throw new Error("graven-sql supports Kysely's PostgresDialect and MysqlDialect only");
 }
 
-type Shared = {
+type Shared<DB> = {
   readonly tables: TableNames;
   readonly flavor: Flavor;
   readonly clock: () => Date;
-  readonly projections: readonly Projection<any, any, Kysely<any>>[];
+  readonly builder: Kysely<GravenDatabase>;
+  readonly projections: readonly Projection<Kysely<DB>>[];
   readonly onProjectionError: (error: unknown, context: { projection: string; streamId: string }) => void;
 };
 
-class SqlStoreView implements EventStore<Kysely<any>> {
-  readonly writer: Kysely<any>;
-  readonly projections: readonly Projection<any, any, Kysely<any>>[];
-  readonly onProjectionError: Shared["onProjectionError"];
+class SqlStoreView<DB> implements EventStore<Kysely<DB>> {
+  readonly writer: Kysely<DB>;
+  readonly projections: readonly Projection<Kysely<DB>>[];
+  readonly onProjectionError: Shared<DB>["onProjectionError"];
 
-  private readonly db: Kysely<any>;
-  private readonly shared: Shared;
+  private readonly db: Kysely<DB>;
+  private readonly shared: Shared<DB>;
 
   // Per-transaction state; only meaningful when `db.isTransaction`.
   private readonly lockedStreamVersions = new Map<string, number>();
   private savepointCounter = 0;
 
-  constructor(db: Kysely<any>, shared: Shared) {
+  constructor(db: Kysely<DB>, shared: Shared<DB>) {
     this.db = db;
     this.shared = shared;
     this.writer = db;
@@ -116,6 +238,10 @@ class SqlStoreView implements EventStore<Kysely<any>> {
 
   private get t(): TableNames {
     return this.shared.tables;
+  }
+
+  private get b(): Kysely<GravenDatabase> {
+    return this.shared.builder;
   }
 
   private requireBound(operation: string): void {
@@ -132,34 +258,46 @@ class SqlStoreView implements EventStore<Kysely<any>> {
     // row takes a shared lock, and a `for update` after it then asks for an upgrade — under
     // concurrent writers to one stream that deadlocks (18/20 failed at 20-way contention).
     const select = () =>
-      this.db.selectFrom(this.t.streams).select("version").where("stream_id", "=", streamId).forUpdate().executeTakeFirst();
+      selectRows(
+        this.db,
+        "graven_streams",
+        this.b.selectFrom("graven_streams").select("version").where("stream_id", "=", streamId).forUpdate(),
+        z.object({ version: dbInteger }),
+      );
 
-    let row = await select();
-    if (!row) {
-      await this.shared.flavor
-        .insertIfAbsent(
-          this.db.insertInto(this.t.streams).values({
+    let rows = await select();
+    if (rows.length === 0) {
+      await execute(
+        this.db,
+        insertIfAbsent(
+          this.shared.flavor.kind,
+          this.b.insertInto("graven_streams").values({
             stream_id: streamId,
             version: 0,
             updated_at: this.shared.flavor.writeTimestamp(this.shared.clock()),
           }),
           "stream_id",
-        )
-        .execute();
-      row = await select();
+        ),
+      );
+      rows = await select();
     }
-    this.lockedStreamVersions.set(streamId, Number(row?.version ?? 0));
+    this.lockedStreamVersions.set(streamId, rows[0]?.version ?? 0);
   }
 
   private async takeLockRow(exclusive: boolean, projectionName: string): Promise<void> {
     const key = `graven:projection:${projectionName}`;
     // Same row-lock-first ordering as `lockStream`, for the same reason.
     const select = () => {
-      const query = this.db.selectFrom(this.t.locks).select("lock_key").where("lock_key", "=", key);
-      return (exclusive ? query.forUpdate() : query.modifyEnd(this.shared.flavor.shareLock)).executeTakeFirst();
+      const query = this.b.selectFrom("graven_locks").select("lock_key").where("lock_key", "=", key);
+      return selectRows(
+        this.db,
+        "graven_locks",
+        exclusive ? query.forUpdate() : query.modifyEnd(this.shared.flavor.shareLock),
+        z.object({ lock_key: z.string() }),
+      );
     };
-    if (await select()) return;
-    await this.shared.flavor.insertIfAbsent(this.db.insertInto(this.t.locks).values({ lock_key: key }), "lock_key").execute();
+    if ((await select()).length > 0) return;
+    await execute(this.db, insertIfAbsent(this.shared.flavor.kind, this.b.insertInto("graven_locks").values({ lock_key: key }), "lock_key"));
     await select();
   }
 
@@ -191,18 +329,17 @@ class SqlStoreView implements EventStore<Kysely<any>> {
       return { newVersion: currentVersion, stored: [] };
     }
 
-    const positionRow = await this.db
-      .selectFrom(this.t.positions)
-      .select("position")
-      .where("id", "=", 1)
-      .forUpdate()
-      .executeTakeFirst();
-    const basePosition = Number(positionRow?.position ?? 0);
-    await this.db
-      .updateTable(this.t.positions)
-      .set({ position: basePosition + request.events.length })
-      .where("id", "=", 1)
-      .execute();
+    const positionRows = await selectRows(
+      this.db,
+      "graven_positions",
+      this.b.selectFrom("graven_positions").select("position").where("id", "=", 1).forUpdate(),
+      z.object({ position: dbInteger }),
+    );
+    const basePosition = positionRows[0]?.position ?? 0;
+    await execute(
+      this.db,
+      this.b.updateTable("graven_positions").set({ position: basePosition + request.events.length }).where("id", "=", 1),
+    );
 
     const now = this.shared.clock();
     const stored: StoredEvent[] = request.events.map((event, index) => ({
@@ -212,16 +349,16 @@ class SqlStoreView implements EventStore<Kysely<any>> {
       aggregateType: request.aggregateType,
       eventId: event.eventId,
       eventRevision: event.eventRevision,
-      event: { eventType: event.eventType, payload: event.payload, occurredAt: event.occurredAt } as StoredEvent["event"],
+      event: { eventType: event.eventType, payload: event.payload, occurredAt: event.occurredAt },
       metadata: request.metadata,
       recordedAt: now,
     }));
 
     const { writeTimestamp } = this.shared.flavor;
     try {
-      await this.db
-        .insertInto(this.t.events)
-        .values(
+      await execute(
+        this.db,
+        this.b.insertInto("graven_events").values(
           stored.map((row) => ({
             global_position: row.globalPosition,
             stream_id: row.streamId,
@@ -235,8 +372,8 @@ class SqlStoreView implements EventStore<Kysely<any>> {
             occurred_at: writeTimestamp(row.event.occurredAt),
             recorded_at: writeTimestamp(row.recordedAt),
           })),
-        )
-        .execute();
+        ),
+      );
     } catch (error) {
       const wrapped = error instanceof Error ? dbErrors.wrapError(error) : error;
       if (wrapped instanceof dbErrors.UniqueViolationError) {
@@ -250,11 +387,13 @@ class SqlStoreView implements EventStore<Kysely<any>> {
     }
 
     const newVersion = currentVersion + request.events.length;
-    await this.db
-      .updateTable(this.t.streams)
-      .set({ version: newVersion, updated_at: writeTimestamp(now) })
-      .where("stream_id", "=", request.streamId)
-      .execute();
+    await execute(
+      this.db,
+      this.b
+        .updateTable("graven_streams")
+        .set({ version: newVersion, updated_at: writeTimestamp(now) })
+        .where("stream_id", "=", request.streamId),
+    );
     this.lockedStreamVersions.set(request.streamId, newVersion);
 
     return { newVersion, stored };
@@ -262,8 +401,8 @@ class SqlStoreView implements EventStore<Kysely<any>> {
 
   private selectEvents() {
     const { jsonTextType, timestampSelectType } = this.shared.flavor;
-    return this.db
-      .selectFrom(this.t.events)
+    return this.b
+      .selectFrom("graven_events")
       .select((eb) => [
         "global_position",
         "stream_id",
@@ -272,50 +411,30 @@ class SqlStoreView implements EventStore<Kysely<any>> {
         "event_id",
         "event_type",
         "event_revision",
-        eb.cast(eb.ref("payload"), jsonTextType).as("payload"),
-        eb.cast(eb.ref("metadata"), jsonTextType).as("metadata"),
-        eb.cast(eb.ref("occurred_at"), timestampSelectType).as("occurred_at"),
-        eb.cast(eb.ref("recorded_at"), timestampSelectType).as("recorded_at"),
+        eb.cast<string>(eb.ref("payload"), jsonTextType).as("payload"),
+        eb.cast<string>(eb.ref("metadata"), jsonTextType).as("metadata"),
+        eb.cast<Date | string>(eb.ref("occurred_at"), timestampSelectType).as("occurred_at"),
+        eb.cast<Date | string>(eb.ref("recorded_at"), timestampSelectType).as("recorded_at"),
       ]);
   }
-
-  private toStoredEvent = (row: Record<string, unknown>): StoredEvent => {
-    const { readTimestamp } = this.shared.flavor;
-    return {
-      globalPosition: Number(row.global_position),
-      streamId: row.stream_id as string,
-      streamVersion: Number(row.stream_version),
-      aggregateType: row.aggregate_type as string,
-      eventId: row.event_id as string,
-      eventRevision: Number(row.event_revision),
-      event: {
-        eventType: row.event_type as string,
-        payload: JSON.parse(row.payload as string),
-        occurredAt: readTimestamp(row.occurred_at),
-      } as StoredEvent["event"],
-      metadata: JSON.parse(row.metadata as string) as EventMetadata,
-      recordedAt: readTimestamp(row.recorded_at),
-    };
-  };
 
   async readStream(streamId: string, options?: ReadStreamOptions): Promise<readonly StoredEvent[]> {
     let query = this.selectEvents().where("stream_id", "=", streamId);
     if (options?.fromVersion !== undefined) query = query.where("stream_version", ">=", options.fromVersion);
     if (options?.toVersion !== undefined) query = query.where("stream_version", "<=", options.toVersion);
-    const rows = await query.orderBy("stream_version").execute();
-    return rows.map(this.toStoredEvent);
+    return selectRows(this.db, "graven_events", query.orderBy("stream_version"), this.shared.flavor.storedEventRow);
   }
 
   async readStreams(streamIds: readonly string[]): Promise<ReadonlyMap<string, readonly StoredEvent[]>> {
     const map = new Map<string, StoredEvent[]>(streamIds.map((id) => [id, []]));
     if (streamIds.length === 0) return map;
-    const rows = await this.selectEvents()
-      .where("stream_id", "in", [...streamIds])
-      .orderBy("stream_id")
-      .orderBy("stream_version")
-      .execute();
-    for (const row of rows) {
-      const event = this.toStoredEvent(row);
+    const rows = await selectRows(
+      this.db,
+      "graven_events",
+      this.selectEvents().where("stream_id", "in", [...streamIds]).orderBy("stream_id").orderBy("stream_version"),
+      this.shared.flavor.storedEventRow,
+    );
+    for (const event of rows) {
       map.get(event.streamId)?.push(event);
     }
     return map;
@@ -324,32 +443,37 @@ class SqlStoreView implements EventStore<Kysely<any>> {
   async readGlobal(options: GlobalReadOptions): Promise<readonly StoredEvent[]> {
     let query = this.selectEvents().where("global_position", ">", options.fromPosition);
     if (options.aggregateType !== undefined) query = query.where("aggregate_type", "=", options.aggregateType);
-    const rows = await query.orderBy("global_position").limit(options.limit).execute();
-    return rows.map(this.toStoredEvent);
+    return selectRows(this.db, "graven_events", query.orderBy("global_position").limit(options.limit), this.shared.flavor.storedEventRow);
   }
 
   async readStreamIds(aggregateType: string): Promise<readonly string[]> {
-    const rows = await this.db
-      .selectFrom(this.t.events)
-      .select("stream_id")
-      .distinct()
-      .where("aggregate_type", "=", aggregateType)
-      .execute();
-    return rows.map((row) => row.stream_id as string);
+    const rows = await selectRows(
+      this.db,
+      "graven_events",
+      this.b.selectFrom("graven_events").select("stream_id").distinct().where("aggregate_type", "=", aggregateType),
+      z.object({ stream_id: z.string() }),
+    );
+    return rows.map((row) => row.stream_id);
   }
 
   async currentPosition(): Promise<number> {
-    const row = await this.db.selectFrom(this.t.positions).select("position").where("id", "=", 1).executeTakeFirst();
-    return Number(row?.position ?? 0);
+    const rows = await selectRows(
+      this.db,
+      "graven_positions",
+      this.b.selectFrom("graven_positions").select("position").where("id", "=", 1),
+      z.object({ position: dbInteger }),
+    );
+    return rows[0]?.position ?? 0;
   }
 
   async readCheckpoint(projectorName: string): Promise<number> {
-    const row = await this.db
-      .selectFrom(this.t.checkpoints)
-      .select("position")
-      .where("projector", "=", projectorName)
-      .executeTakeFirst();
-    return Number(row?.position ?? 0);
+    const rows = await selectRows(
+      this.db,
+      "graven_checkpoints",
+      this.b.selectFrom("graven_checkpoints").select("position").where("projector", "=", projectorName),
+      z.object({ position: dbInteger }),
+    );
+    return rows[0]?.position ?? 0;
   }
 
   async writeCheckpoint(projectorName: string, position: number): Promise<void> {
@@ -358,14 +482,16 @@ class SqlStoreView implements EventStore<Kysely<any>> {
       return;
     }
     const updatedAt = this.shared.flavor.writeTimestamp(this.shared.clock());
-    const insert = this.db.insertInto(this.t.checkpoints).values({ projector: projectorName, position, updated_at: updatedAt });
-    await (this.shared.flavor === postgres
-      ? insert.onConflict((oc) => oc.column("projector").doUpdateSet({ position, updated_at: updatedAt }))
-      : insert.onDuplicateKeyUpdate({ position, updated_at: updatedAt })
-    ).execute();
+    const insert = this.b.insertInto("graven_checkpoints").values({ projector: projectorName, position, updated_at: updatedAt });
+    await execute(
+      this.db,
+      this.shared.flavor.kind === "postgres"
+        ? insert.onConflict((oc) => oc.column("projector").doUpdateSet({ position, updated_at: updatedAt }))
+        : insert.onDuplicateKeyUpdate({ position, updated_at: updatedAt }),
+    );
   }
 
-  async transaction<T>(fn: (tx: EventStore<Kysely<any>>) => Promise<T>): Promise<T> {
+  async transaction<T>(fn: (tx: EventStore<Kysely<DB>>) => Promise<T>): Promise<T> {
     if (this.db.isTransaction) return fn(this);
     return this.db.transaction().execute((trx) => fn(new SqlStoreView(trx, this.shared)));
   }
@@ -383,76 +509,88 @@ class SqlStoreView implements EventStore<Kysely<any>> {
       throw error;
     }
   }
-}
 
-async function migrate(db: Kysely<any>, tables: TableNames, flavor: Flavor): Promise<void> {
-  const { keyType, jsonType, timestampType } = flavor;
-  // MySQL has no `create index if not exists`, so indexes are created with their table.
-  const existing = new Set((await db.introspection.getTables()).map((table) => table.name));
+  async migrate(): Promise<void> {
+    const { keyType, jsonType, timestampType } = this.shared.flavor;
+    // MySQL has no `create index if not exists`, so indexes are created with their table.
+    const existing = new Set((await this.db.introspection.getTables()).map((table) => table.name));
 
-  await db.schema
-    .createTable(tables.positions)
-    .ifNotExists()
-    .addColumn("id", "integer", (c) => c.primaryKey())
-    .addColumn("position", "bigint", (c) => c.notNull())
-    .execute();
-  await flavor.insertIfAbsent(db.insertInto(tables.positions).values({ id: 1, position: 0 }), "id").execute();
+    await execute(
+      this.db,
+      this.b.schema
+        .createTable("graven_positions")
+        .ifNotExists()
+        .addColumn("id", "integer", (c) => c.primaryKey())
+        .addColumn("position", "bigint", (c) => c.notNull()),
+    );
+    await execute(this.db, insertIfAbsent(this.shared.flavor.kind, this.b.insertInto("graven_positions").values({ id: 1, position: 0 }), "id"));
 
-  await db.schema
-    .createTable(tables.streams)
-    .ifNotExists()
-    .addColumn("stream_id", keyType, (c) => c.primaryKey())
-    .addColumn("version", "integer", (c) => c.notNull())
-    .addColumn("updated_at", timestampType, (c) => c.notNull())
-    .execute();
+    await execute(
+      this.db,
+      this.b.schema
+        .createTable("graven_streams")
+        .ifNotExists()
+        .addColumn("stream_id", keyType, (c) => c.primaryKey())
+        .addColumn("version", "integer", (c) => c.notNull())
+        .addColumn("updated_at", timestampType, (c) => c.notNull()),
+    );
 
-  if (!existing.has(tables.events)) {
-    await db.schema
-      .createTable(tables.events)
-      .ifNotExists()
-      .addColumn("global_position", "bigint", (c) => c.primaryKey())
-      .addColumn("stream_id", keyType, (c) => c.notNull())
-      .addColumn("stream_version", "integer", (c) => c.notNull())
-      .addColumn("aggregate_type", keyType, (c) => c.notNull())
-      .addColumn("event_id", keyType, (c) => c.notNull())
-      .addColumn("event_type", keyType, (c) => c.notNull())
-      .addColumn("event_revision", "integer", (c) => c.notNull())
-      .addColumn("payload", jsonType, (c) => c.notNull())
-      .addColumn("metadata", jsonType, (c) => c.notNull())
-      .addColumn("occurred_at", timestampType, (c) => c.notNull())
-      .addColumn("recorded_at", timestampType, (c) => c.notNull())
-      .addUniqueConstraint(`${tables.events}_stream_version_key`, ["stream_id", "stream_version"])
-      .addUniqueConstraint(`${tables.events}_event_id_key`, ["event_id"])
-      .execute();
-    await db.schema
-      .createIndex(`${tables.events}_aggregate_position_idx`)
-      .on(tables.events)
-      .columns(["aggregate_type", "global_position"])
-      .execute();
-    await db.schema
-      .createIndex(`${tables.events}_type_position_idx`)
-      .on(tables.events)
-      .columns(["event_type", "global_position"])
-      .execute();
+    if (!existing.has(this.t.events)) {
+      await execute(
+        this.db,
+        this.b.schema
+          .createTable("graven_events")
+          .ifNotExists()
+          .addColumn("global_position", "bigint", (c) => c.primaryKey())
+          .addColumn("stream_id", keyType, (c) => c.notNull())
+          .addColumn("stream_version", "integer", (c) => c.notNull())
+          .addColumn("aggregate_type", keyType, (c) => c.notNull())
+          .addColumn("event_id", keyType, (c) => c.notNull())
+          .addColumn("event_type", keyType, (c) => c.notNull())
+          .addColumn("event_revision", "integer", (c) => c.notNull())
+          .addColumn("payload", jsonType, (c) => c.notNull())
+          .addColumn("metadata", jsonType, (c) => c.notNull())
+          .addColumn("occurred_at", timestampType, (c) => c.notNull())
+          .addColumn("recorded_at", timestampType, (c) => c.notNull())
+          .addUniqueConstraint(`${this.t.events}_stream_version_key`, ["stream_id", "stream_version"])
+          .addUniqueConstraint(`${this.t.events}_event_id_key`, ["event_id"]),
+      );
+      await execute(
+        this.db,
+        this.b.schema.createIndex(`${this.t.events}_aggregate_position_idx`).on("graven_events").columns(["aggregate_type", "global_position"]),
+      );
+      await execute(
+        this.db,
+        this.b.schema.createIndex(`${this.t.events}_type_position_idx`).on("graven_events").columns(["event_type", "global_position"]),
+      );
+    }
+
+    await execute(
+      this.db,
+      this.b.schema
+        .createTable("graven_checkpoints")
+        .ifNotExists()
+        .addColumn("projector", keyType, (c) => c.primaryKey())
+        .addColumn("position", "bigint", (c) => c.notNull())
+        .addColumn("updated_at", timestampType, (c) => c.notNull()),
+    );
+
+    await execute(
+      this.db,
+      this.b.schema.createTable("graven_locks").ifNotExists().addColumn("lock_key", keyType, (c) => c.primaryKey()),
+    );
   }
-
-  await db.schema
-    .createTable(tables.checkpoints)
-    .ifNotExists()
-    .addColumn("projector", keyType, (c) => c.primaryKey())
-    .addColumn("position", "bigint", (c) => c.notNull())
-    .addColumn("updated_at", timestampType, (c) => c.notNull())
-    .execute();
-
-  await db.schema.createTable(tables.locks).ifNotExists().addColumn("lock_key", keyType, (c) => c.primaryKey()).execute();
 }
 
 export function createSqlEventStore<DB>(options: CreateSqlEventStoreOptions<DB>): SqlEventStore<DB> {
-  const db = options.db as Kysely<any>;
-  const shared: Shared = {
-    tables: resolveTableNames(options.tables),
-    flavor: flavorOf(db),
+  const db = options.db;
+  const tables = resolveTableNames(options.tables);
+  const flavor = flavorOf(db);
+  const shared: Shared<DB> = {
+    tables,
+    flavor,
     clock: options.clock ?? (() => new Date()),
+    builder: createQueryBuilder(flavor.kind, namesFor(tables)),
     projections: options.projections ?? [],
     onProjectionError:
       options.onProjectionError ??
@@ -461,7 +599,5 @@ export function createSqlEventStore<DB>(options: CreateSqlEventStoreOptions<DB>)
       }),
   };
 
-  return Object.assign(new SqlStoreView(db, shared), {
-    migrate: () => migrate(db, shared.tables, shared.flavor),
-  }) as unknown as SqlEventStore<DB>;
+  return new SqlStoreView(db, shared);
 }

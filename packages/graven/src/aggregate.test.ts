@@ -19,8 +19,8 @@ type State = { count: number } | null;
 const counter = defineAggregate({
   type: "counter",
   events: [created, incremented],
-  initialState: null as State,
-  evolve: (state, event) => {
+  initialState: null,
+  evolve: (state: State, event): State => {
     switch (event.eventType) {
       case "counter.created":
         return { count: 0 };
@@ -32,13 +32,11 @@ const counter = defineAggregate({
 
 describe("fold", () => {
   it("reduces events over the initial state in order", () => {
-    const events = [
-      { eventType: "counter.created" as const, payload: {} as Record<string, never>, occurredAt: new Date() },
+    const state = fold(counter, [
+      { eventType: "counter.created" as const, payload: {}, occurredAt: new Date() },
       { eventType: "counter.incremented" as const, payload: { by: 3 }, occurredAt: new Date() },
       { eventType: "counter.incremented" as const, payload: { by: 4 }, occurredAt: new Date() },
-    ];
-
-    const state = fold(counter, events);
+    ]);
     expect(state).toEqual({ count: 7 });
   });
 

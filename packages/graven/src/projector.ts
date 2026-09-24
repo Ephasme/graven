@@ -1,24 +1,59 @@
+import type { Aggregate } from "./aggregate.js";
 import { DuplicateProjectorError } from "./errors.js";
+import type { EventFamilies, EventOf } from "./events.js";
 import type { EventStore } from "./store.js";
-import type { StoredEvent } from "./types.js";
+import type { BaseEvent, StoredEvent } from "./types.js";
 
-export type ProjectorContext<W> = {
-  readonly event: StoredEvent;
+export type ProjectorContext<E extends BaseEvent, W> = {
+  readonly event: StoredEvent<E>;
   readonly writer: W;
 };
 
 export interface Projector<W> {
   readonly name: string;
-  readonly aggregateType?: string;
-  apply(context: ProjectorContext<W>): Promise<void>;
+  readonly aggregateType: string | undefined;
+  apply(context: ProjectorContext<BaseEvent, W>): Promise<void>;
 }
 
+export function defineProjector<S, C extends EventFamilies, W>(config: {
+  readonly name: string;
+  readonly aggregate: Aggregate<S, C>;
+  readonly apply: (context: ProjectorContext<EventOf<C>, W>) => Promise<void>;
+}): Projector<W>;
 export function defineProjector<W>(config: {
   readonly name: string;
-  readonly aggregateType?: string;
-  readonly apply: (context: ProjectorContext<W>) => Promise<void>;
-}): Projector<W> {
-  return { name: config.name, aggregateType: config.aggregateType, apply: config.apply };
+  readonly apply: (context: ProjectorContext<BaseEvent, W>) => Promise<void>;
+}): Projector<W>;
+export function defineProjector<S, C extends EventFamilies, W>(
+  config:
+    | {
+        readonly name: string;
+        readonly aggregate: Aggregate<S, C>;
+        readonly apply: (context: ProjectorContext<EventOf<C>, W>) => Promise<void>;
+      }
+    | {
+        readonly name: string;
+        readonly apply: (context: ProjectorContext<BaseEvent, W>) => Promise<void>;
+      },
+): Projector<W> {
+  if ("aggregate" in config) {
+    const { name, aggregate, apply } = config;
+    return {
+      name,
+      aggregateType: aggregate.type,
+      // The declared payload is the latest, upcast shape; decode the row before it reaches `apply`.
+      apply: async ({ event, writer }) => {
+        const decoded = aggregate.events.parseStored({
+          eventType: event.event.eventType,
+          eventRevision: event.eventRevision,
+          payload: event.event.payload,
+          occurredAt: event.event.occurredAt,
+        });
+        await apply({ writer, event: { ...event, event: decoded } });
+      },
+    };
+  }
+  return { name: config.name, aggregateType: undefined, apply: config.apply };
 }
 
 /** One pass. Returns how many events it consumed. */
@@ -119,7 +154,7 @@ export function startProjectors<W>(
       if (currentPass) {
         wakeRequested = true;
       } else {
-        if (timer) clearTimeout(timer);
+        clearTimeout(timer);
         tick();
       }
     },
@@ -127,7 +162,7 @@ export function startProjectors<W>(
     stop() {
       if (stopPromise) return stopPromise;
       stopped = true;
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
       stopPromise = (currentPass ?? Promise.resolve()).then(() => undefined);
       return stopPromise;
     },

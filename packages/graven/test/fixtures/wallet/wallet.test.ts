@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 import { decide } from "../../../src/decide.js";
 import { fold } from "../../../src/aggregate.js";
 import { createInMemoryStore } from "../../../src/memory.js";
@@ -12,7 +12,11 @@ describe("wallet aggregate (upcasting fixture)", () => {
       new Date("2026-01-03T00:00:00.000Z"),
     ];
     let clockIndex = 0;
-    const clock = () => clockValues[clockIndex++]!;
+    const clock = () => {
+      const value = clockValues[clockIndex++];
+      assert(value !== undefined);
+      return value;
+    };
 
     const store = createInMemoryStore();
     const streamId = "wallet-1";
@@ -63,14 +67,16 @@ describe("wallet aggregate (upcasting fixture)", () => {
     const rows = await store.readStream(streamId);
     expect(rows).toHaveLength(1);
 
+    const [first] = rows;
+    assert(first !== undefined);
     const parsed = wallet.events.parseStored({
-      eventType: rows[0]!.event.eventType,
-      eventRevision: rows[0]!.eventRevision,
-      payload: rows[0]!.event.payload,
-      occurredAt: rows[0]!.event.occurredAt,
+      eventType: first.event.eventType,
+      eventRevision: first.eventRevision,
+      payload: first.event.payload,
+      occurredAt: first.event.occurredAt,
     });
 
-    expect(rows[0]!.eventRevision).toBe(1);
+    expect(first.eventRevision).toBe(1);
     expect(parsed.payload).toEqual({ minutes: 50, source: "legacy" });
   });
 });

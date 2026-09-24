@@ -28,9 +28,9 @@ type AssignmentEmit = InsertableEventOf<typeof assignmentEvents>;
 export const assignment = defineAggregate({
   type: "assignment",
   events: assignmentEvents,
-  initialState: null as AssignmentState | null,
+  initialState: null,
   elideNoOps: true,
-  evolve: (state, event) => {
+  evolve: (state: AssignmentState | null, event): AssignmentState | null => {
     const fresh = state === null || state.revoked;
 
     if (event.eventType === "assignment.requested") {
@@ -42,20 +42,20 @@ export const assignment = defineAggregate({
             sourceGroupId: event.payload.sourceGroupId,
             commandUuid: event.payload.commandUuid,
             error: event.payload.error,
-            status: (event.payload.error !== null ? "failed" : "pending") as AssignmentStatus,
+            status: event.payload.error !== null ? "failed" : "pending",
             requestedAt: event.occurredAt,
             revoked: false,
           }
         : {
-            assignmentId: state!.assignmentId,
+            assignmentId: state.assignmentId,
             profileId: event.payload.profileId,
             udid: event.payload.udid,
             // NULL is "direct" and outranks every group: a direct assignment always wins,
             // and a group write never downgrades an already-null row.
-            sourceGroupId: state!.sourceGroupId === null ? null : event.payload.sourceGroupId,
+            sourceGroupId: state.sourceGroupId === null ? null : event.payload.sourceGroupId,
             commandUuid: event.payload.commandUuid,
             error: event.payload.error,
-            status: (event.payload.error !== null ? "failed" : "pending") as AssignmentStatus,
+            status: event.payload.error !== null ? "failed" : "pending",
             requestedAt: event.occurredAt,
             revoked: false,
           };
@@ -63,38 +63,38 @@ export const assignment = defineAggregate({
 
     // Every other fact needs a live, non-revoked binding to apply to.
     if (fresh) return state;
-    const current = state!;
+    const current = state;
 
     switch (event.eventType) {
       case "assignment.install_acknowledged": {
         if (current.status !== "pending" || event.payload.commandUuid !== current.commandUuid) return state;
-        return { ...current, status: "installed" as const, error: null };
+        return { ...current, status: "installed", error: null };
       }
       case "assignment.install_rejected": {
         if (event.payload.commandUuid !== current.commandUuid) return state;
         // `installed` is admitted so the command Flock sent can correct a `ProfileList`
         // that promoted the binding ahead of the command's own outcome.
         if (current.status !== "pending" && current.status !== "installed") return state;
-        return { ...current, status: "failed" as const, error: event.payload.status };
+        return { ...current, status: "failed", error: event.payload.status };
       }
       case "assignment.observed_present": {
         // `ProfileList` names identifiers, never versions: presence proves nothing about a
         // re-push that failed, so only a `pending` binding heals.
         if (current.status !== "pending") return state;
         if (event.occurredAt < current.requestedAt) return state;
-        return { ...current, status: "installed" as const, error: null };
+        return { ...current, status: "installed", error: null };
       }
       case "assignment.observed_absent": {
         if (current.status !== "installed") return state;
         if (event.occurredAt < current.requestedAt) return state;
-        return { ...current, status: "removed" as const };
+        return { ...current, status: "removed" };
       }
       case "assignment.removed": {
         if (current.status === "removed") return state;
         // Re-checks `withdrawAssignment`'s own precondition: that decision reads state
         // outside this event's append, so a direct `requested` can land between the two.
         if (event.payload.groupId !== null && event.payload.groupId !== current.sourceGroupId) return state;
-        return { ...current, status: "removed" as const };
+        return { ...current, status: "removed" };
       }
       case "assignment.revoked": {
         return { ...current, revoked: true };
@@ -121,12 +121,13 @@ export function requestAssignment(
   newId: () => string,
 ): Proposal<typeof assignmentEvents, null> {
   const fresh = state === null || state.revoked;
+  const assignmentId = fresh ? newId() : state.assignmentId;
   return {
     emit: [
       {
         eventType: "assignment.requested",
         payload: {
-          assignmentId: fresh ? newId() : state!.assignmentId,
+          assignmentId,
           profileId: input.profileId.toLowerCase(),
           udid: input.udid,
           sourceGroupId: input.sourceGroupId?.toLowerCase() ?? null,

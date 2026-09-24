@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { defineAggregate } from "./aggregate.js";
+import { decide } from "./decide.js";
+import { defineEvent } from "./events.js";
 import { StaleStreamVersionError, DuplicateEventIdError } from "./errors.js";
 import { createInMemoryStore } from "./memory.js";
+import { defineProjection } from "./projection.js";
+import { z } from "zod";
+
+type Tables = { readonly t: number };
 
 function event(eventId: string, eventType = "widget.created") {
   return { eventId, eventType, eventRevision: 1, payload: {}, occurredAt: new Date() };
@@ -124,7 +131,7 @@ describe("createInMemoryStore", () => {
     await Promise.all([decide("a"), decide("b")]);
 
     const events = await store.readStream("s1");
-    expect(events.map((e) => e.streamVersion).sort()).toEqual([1, 2]);
+    expect(events.map((e) => e.streamVersion).sort((a, b) => a - b)).toEqual([1, 2]);
     expect(await store.currentPosition()).toBe(2);
   });
 
@@ -180,13 +187,13 @@ describe("createInMemoryStore", () => {
   });
 
   it("savepoint rolls back writer table mutations on throw without rolling back the transaction", async () => {
-    const store = createInMemoryStore();
+    const store = createInMemoryStore<Tables>();
 
     await store.transaction(async (tx) => {
-      tx.writer.tables.set("t", new Map([["a", 1]]));
+      tx.writer.table("t").set("a", 1);
       await expect(
         tx.savepoint(async () => {
-          tx.writer.tables.get("t")?.set("b", 2);
+          tx.writer.table("t").set("b", 2);
           throw new Error("boom");
         }),
       ).rejects.toThrow("boom");
@@ -202,8 +209,8 @@ describe("createInMemoryStore", () => {
 
     // The savepoint's "b" write was rolled back; "a" (written before the savepoint) and the
     // append that ran after it both survive because the outer transaction committed.
-    expect(store.writer.tables.get("t")?.has("b")).toBe(false);
-    expect(store.writer.tables.get("t")?.get("a")).toBe(1);
+    expect(store.writer.table("t").has("b")).toBe(false);
+    expect(store.writer.table("t").get("a")).toBe(1);
     expect((await store.readStream("s1")).length).toBe(1);
   });
 
@@ -213,12 +220,12 @@ describe("createInMemoryStore", () => {
   });
 
   it("a transaction that throws leaves rows another transaction committed meanwhile intact", async () => {
-    const store = createInMemoryStore();
+    const store = createInMemoryStore<Tables>();
     const { promise: bWrote, resolve: markBWrote } = Promise.withResolvers<void>();
     const { promise: aCommitted, resolve: markACommitted } = Promise.withResolvers<void>();
 
     const b = store.transaction(async (tx) => {
-      tx.writer.tables.set("t", new Map([["b", 2]]));
+      tx.writer.table("t").set("b", 2);
       markBWrote();
       await aCommitted;
       throw new Error("boom");
@@ -226,17 +233,17 @@ describe("createInMemoryStore", () => {
 
     await bWrote;
     await store.transaction(async (tx) => {
-      tx.writer.tables.set("t", new Map([...(tx.writer.tables.get("t") ?? []), ["a", 1]]));
+      tx.writer.table("t").set("a", 1);
     });
     markACommitted();
     await expect(b).rejects.toThrow("boom");
 
-    expect(store.writer.tables.get("t")?.get("a")).toBe(1);
-    expect(store.writer.tables.get("t")?.has("b")).toBe(false);
+    expect(store.writer.table("t").get("a")).toBe(1);
+    expect(store.writer.table("t").has("b")).toBe(false);
   });
 
   it("two transactions writing different rows of one table both keep their rows on commit", async () => {
-    const store = createInMemoryStore();
+    const store = createInMemoryStore<Tables>();
     const { promise: bothStaged, resolve: markStaged } = Promise.withResolvers<void>();
     let staged = 0;
     const stage = () => {
@@ -246,35 +253,33 @@ describe("createInMemoryStore", () => {
 
     const write = (key: string, value: number) =>
       store.transaction(async (tx) => {
-        const table = tx.writer.tables.get("t") ?? new Map<string, unknown>();
-        table.set(key, value);
-        tx.writer.tables.set("t", table);
+        tx.writer.table("t").set(key, value);
         stage();
         await bothStaged;
       });
 
     await Promise.all([write("a", 1), write("b", 2)]);
 
-    expect(store.writer.tables.get("t")?.get("a")).toBe(1);
-    expect(store.writer.tables.get("t")?.get("b")).toBe(2);
+    expect(store.writer.table("t").get("a")).toBe(1);
+    expect(store.writer.table("t").get("b")).toBe(2);
   });
 
   it("an uncommitted write is invisible outside its transaction", async () => {
-    const store = createInMemoryStore();
+    const store = createInMemoryStore<Tables>();
     const { promise: written, resolve: markWritten } = Promise.withResolvers<void>();
     const { promise: checked, resolve: markChecked } = Promise.withResolvers<void>();
 
     const tx = store.transaction(async (tx) => {
-      tx.writer.tables.set("t", new Map([["a", 1]]));
+      tx.writer.table("t").set("a", 1);
       markWritten();
       await checked;
     });
 
     await written;
-    expect(store.writer.tables.has("t")).toBe(false);
+    expect(store.writer.table("t").has("a")).toBe(false);
     markChecked();
     await tx;
-    expect(store.writer.tables.get("t")?.get("a")).toBe(1);
+    expect(store.writer.table("t").get("a")).toBe(1);
   });
 
   it("append called directly on the unbound store wraps itself in a transaction", async () => {
@@ -412,34 +417,26 @@ describe("createInMemoryStore", () => {
   });
 
   it("a throwing projection with no custom onProjectionError falls through to the default handler without crashing decide", async () => {
-    const store = createInMemoryStore({
-      projections: [
-        {
-          name: "widgets",
-          aggregate: { type: "widget" } as never,
-          apply: async () => {
-            throw new Error("boom");
-          },
-        },
-      ],
+    const created = defineEvent({ eventType: "widget.created" as const, latestRevision: 1, latest: z.object({}) });
+    const widget = defineAggregate({
+      type: "widget",
+      events: [created],
+      initialState: null,
+      evolve: (_state: { readonly seen: true } | null): { readonly seen: true } | null => ({ seen: true }),
+    });
+    const projection = defineProjection({
+      name: "widgets",
+      aggregate: widget,
+      apply: async () => {
+        throw new Error("boom");
+      },
     });
 
     // Exercises the default onProjectionError (console.error), not a custom one: proves
     // createInMemoryStore's default handler doesn't itself throw or block the append.
-    const result = await store.transaction(async (tx) => {
-      const appendResult = await tx.append({
-        streamId: "s1",
-        aggregateType: "widget",
-        expected: { kind: "no-stream" },
-        events: [event("e1")],
-        metadata: { correlationId: "c1" },
-      });
-      await tx.savepoint(() =>
-        tx.projections[0]!.apply({ streamId: "s1", state: null, appended: [], version: 1, writer: tx.writer } as never),
-      ).catch((error) => tx.onProjectionError(error, { projection: "widgets", streamId: "s1" }));
-      return appendResult;
-    });
+    const store = createInMemoryStore({ projections: [projection] });
+    const result = await decide(store, widget, "s1", () => ({ emit: [{ eventType: "widget.created" as const, payload: {} }], result: null }));
 
-    expect(result.newVersion).toBe(1);
+    expect(result.appended).toBe(true);
   });
 });
