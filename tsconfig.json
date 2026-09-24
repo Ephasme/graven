@@ -1,4 +1,4 @@
 {
   "files": [],
-  "references": [{ "path": "packages/graven" }, { "path": "packages/graven-sql" }]
+  "references": [{ "path": "packages/graven" }, { "path": "packages/graven-sql" }, { "path": "scripts" }]
 }

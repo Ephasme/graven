@@ -53,9 +53,11 @@ A bank account that can be opened, credited and debited, and that refuses to go 
 ```ts
 import { z } from "zod";
 import { decide, defineAggregate, defineEvent, defineProjection } from "@les-sherpas/graven";
-import { createSqlEventStore } from "@les-sherpas/graven-sql";
+import { createSqlEventStore, type GravenDatabase } from "@les-sherpas/graven-sql";
 import { Kysely, PostgresDialect } from "kysely";
 import pg from "pg";
+
+type AppDatabase = GravenDatabase & { account_balances: { id: string; balance: number } };
 
 // 1. Events: one family per event type, its payload described by a zod schema.
 const opened = defineEvent({
@@ -80,7 +82,7 @@ type Account = { readonly owner: string; readonly balance: number } | null;
 const account = defineAggregate({
   type: "account",
   events: [opened, deposited, withdrawn],
-  initialState: null as Account,
+  initialState: null,
   evolve: (state, event): Account => {
     switch (event.eventType) {
       case "account.opened":
@@ -105,13 +107,13 @@ const balances = defineProjection({
       .onConflict((oc) => oc.column("id").doUpdateSet({ balance: state.balance }))
       .execute();
   },
-  wipe: async (writer: Kysely<any>) => {
+  wipe: async (writer: Kysely<AppDatabase>) => {
     await writer.deleteFrom("account_balances").execute();
   },
 });
 
 // 4. The store: any Kysely over PostgresDialect or MysqlDialect.
-const db = new Kysely<any>({
+const db = new Kysely<AppDatabase>({
   dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: process.env.DATABASE_URL }) }),
 });
 const store = createSqlEventStore({ db, projections: [balances] });
@@ -120,18 +122,18 @@ await store.migrate(); // creates the graven_* tables; account_balances is yours
 // 5. Decide.
 await decide(store, account, "acc-1", (state) =>
   state === null
-    ? { emit: [{ eventType: "account.opened" as const, payload: { owner: "ada" } }], result: null }
+    ? { emit: [{ eventType: "account.opened", payload: { owner: "ada" } }], result: null }
     : null,
 );
 await decide(store, account, "acc-1", () => ({
-  emit: [{ eventType: "account.deposited" as const, payload: { amount: 100 } }],
+  emit: [{ eventType: "account.deposited", payload: { amount: 100 } }],
   result: null,
 }));
 
 const outcome = await decide(store, account, "acc-1", (state) => {
   if (state === null || state.balance < 30) return null; // refused: nothing is appended
   return {
-    emit: [{ eventType: "account.withdrawn" as const, payload: { amount: 30 } }],
+    emit: [{ eventType: "account.withdrawn", payload: { amount: 30 } }],
     result: state.balance - 30,
   };
 });
@@ -143,8 +145,6 @@ if (outcome.appended) {
   console.log(`not appended: ${outcome.reason}`); // "refused" | "no-op"
 }
 ```
-
-Write each emitted `eventType` with `as const`. Without it, TypeScript widens the literal to `string`, and the call no longer typechecks.
 
 For tests, and for anything that doesn't need a database, swap step 4 for `createInMemoryStore({ projections })`. It follows the same locking, versioning and rollback rules.
 
@@ -367,6 +367,8 @@ Every error extends `GravenError` and has a stable `code` and a `context` object
 | `StaleStreamVersionError`, `StreamVersionConflictError` | The stream moved between the read and the append. `decide` retries on both. |
 | `ConcurrentModificationError` | `decide` ran out of attempts. |
 | `ProjectionNotRebuildableError` | `rebuild` was asked for a projection with no `wipe`. |
+| `ProjectionAggregateMismatchError` | `decide` found a registered projection built over a different `Aggregate` object than the one it was called with. |
+| `InvalidStoredRowError` | A store found a row (SQL) whose columns don't decode to a valid `StoredEvent`. `context.table` names the table. |
 | `DuplicateProjectorError` | Two projectors share a name. |
 
 **`@les-sherpas/graven-sql`**
@@ -374,6 +376,7 @@ Every error extends `GravenError` and has a stable `code` and a `context` object
 | Export | Purpose |
 |---|---|
 | `createSqlEventStore({ db, tables?, clock?, projections?, onProjectionError? })` | The store; `db` is a `Kysely` or a `Transaction`. Adds `migrate()`. |
+| `GravenDatabase` | The compile-only Kysely schema type the store's queries are built against, e.g. `Kysely<GravenDatabase & { your_table: ... }>`. |
 | `resolveTableNames` | Default table names merged with overrides. Throws on a name that isn't a plain SQL identifier. |
 
 ## Contributing
@@ -382,7 +385,7 @@ Questions and bugs go in [GitHub issues](https://github.com/Les-Sherpas/graven/i
 
 ```sh
 bun install
-bun run check              # typecheck + unit tests, no database
+bun run check              # typecheck + lint + unit tests, no database
 bun run db:up              # Postgres on :55433, MariaDB on :53306
 GRAVEN_POSTGRES_URL=postgres://graven:graven@localhost:55433/graven \
 GRAVEN_MYSQL_URL=mysql://root:graven@localhost:53306/graven \

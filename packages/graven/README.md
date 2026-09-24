@@ -23,13 +23,13 @@ const opened = defineEvent({ eventType: "account.opened", latestRevision: 1, lat
 const account = defineAggregate({
   type: "account",
   events: [opened],
-  initialState: null as { owner: string } | null,
-  evolve: (_state, event) => ({ owner: event.payload.owner }),
+  initialState: null,
+  evolve: (_state, event): { owner: string } | null => ({ owner: event.payload.owner }),
 });
 
 const store = createInMemoryStore();
 await decide(store, account, "acc-1", (state) =>
-  state ? null : { emit: [{ eventType: "account.opened" as const, payload: { owner: "ada" } }], result: null },
+  state ? null : { emit: [{ eventType: "account.opened", payload: { owner: "ada" } }], result: null },
 );
 ```
 

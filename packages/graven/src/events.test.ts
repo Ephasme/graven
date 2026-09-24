@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, assert } from "vitest";
 import { DuplicateEventFamilyError, InvalidEventPayloadError, UnknownEventRevisionError, UnknownEventTypeError } from "./errors.js";
 import { defineEvent, defineEvents } from "./events.js";
 import { z } from "zod";
@@ -14,7 +14,7 @@ describe("defineEvents", () => {
     ]);
 
     const parsed = registry.parseInsertable({ eventType: "widget.created", payload: { name: "a" } });
-    expect(parsed).toEqual({ eventType: "widget.created", eventRevision: 1, payload: { name: "a" } });
+    expect(parsed).toEqual({ eventRevision: 1, event: { eventType: "widget.created", payload: { name: "a" } } });
   });
 
   it("throws UnknownEventTypeError for an unregistered type", () => {
@@ -22,9 +22,10 @@ describe("defineEvents", () => {
       defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
     ]);
 
-    expect(() => registry.parseInsertable({ eventType: "widget.deleted", payload: {} })).toThrow(
-      UnknownEventTypeError,
-    );
+    expect(() =>
+      // @ts-expect-error unregistered event type is rejected at compile time too
+      registry.parseInsertable({ eventType: "widget.deleted", payload: {} }),
+    ).toThrow(UnknownEventTypeError);
   });
 
   it("throws InvalidEventPayloadError with issues on a bad payload", () => {
@@ -33,12 +34,12 @@ describe("defineEvents", () => {
     ]);
 
     try {
-      registry.parseInsertable({ eventType: "widget.created", payload: { name: 1 } });
+      registry.parseStored({ eventType: "widget.created", eventRevision: 1, payload: { name: 1 }, occurredAt: new Date() });
       expect.unreachable();
     } catch (error) {
-      expect(error).toBeInstanceOf(InvalidEventPayloadError);
-      expect((error as InvalidEventPayloadError).context.issues).toBeInstanceOf(Array);
-      expect(((error as InvalidEventPayloadError).context.issues as unknown[]).length).toBeGreaterThan(0);
+      assert(error instanceof InvalidEventPayloadError);
+      expect(error.context.issues).toBeInstanceOf(Array);
+      expect(error.context.issues.length).toBeGreaterThan(0);
     }
   });
 
@@ -178,6 +179,7 @@ describe("defineEvents", () => {
     const registry = defineEvents([
       defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
     ]);
+    // @ts-expect-error unregistered event type is rejected at compile time too
     expect(() => registry.latestRevision("widget.deleted")).toThrow(UnknownEventTypeError);
   });
 

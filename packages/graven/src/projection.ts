@@ -1,36 +1,72 @@
-import type { Aggregate } from "./aggregate.js";
-import { ProjectionNotRebuildableError } from "./errors.js";
-import type { AnyEventFamily, EventOf } from "./events.js";
+import type { Aggregate, Fold, SealedFold } from "./aggregate.js";
+import { ProjectionAggregateMismatchError, ProjectionNotRebuildableError } from "./errors.js";
+import type { EventFamilies } from "./events.js";
 import type { EventStore } from "./store.js";
-import type { TimedEvent } from "./types.js";
+import type { StoredEvent } from "./types.js";
 
-export type ProjectionContext<S, C extends readonly AnyEventFamily[], W> = {
+export type ProjectionContext<S, C extends EventFamilies, W> = Fold<S, C> & {
   readonly streamId: string;
-  readonly state: S; // folded after the append
-  readonly appended: readonly TimedEvent<EventOf<C>>[]; // what this decision added
   readonly version: number; // the stream's version after the append
   readonly writer: W;
 };
 
-export interface Projection<S, C extends readonly AnyEventFamily[], W> {
+/** A projection as a store holds it: aggregate types erased, only the writer kept. */
+export interface Projection<W> {
   readonly name: string;
-  readonly aggregate: Aggregate<S, C>;
-  apply(context: ProjectionContext<S, C, W>): Promise<void>;
-  /** Runs inside the rebuild transaction, before any stream is re-projected. */
-  wipe?(writer: W): Promise<void>;
+  readonly aggregate: { readonly type: string };
+  readonly wipe: ((writer: W) => Promise<void>) | undefined;
+  /** decide: apply the fold decide sealed. */
+  project(input: {
+    readonly streamId: string;
+    readonly version: number;
+    readonly sealed: SealedFold;
+    readonly writer: W;
+  }): Promise<void>;
+  /** rebuild: fold `rows` with the projection's own aggregate and apply; false when `rows` is empty. */
+  replay(input: {
+    readonly streamId: string;
+    readonly rows: readonly StoredEvent[];
+    readonly writer: W;
+  }): Promise<boolean>;
 }
 
-export function defineProjection<S, C extends readonly AnyEventFamily[], W>(config: {
+export function defineProjection<S, C extends EventFamilies, W>(config: {
   readonly name: string;
   readonly aggregate: Aggregate<S, C>;
   readonly apply: (context: ProjectionContext<S, C, W>) => Promise<void>;
   readonly wipe?: (writer: W) => Promise<void>;
-}): Projection<S, C, W> {
+}): Projection<W> {
+  const { aggregate, apply } = config;
+
   return {
     name: config.name,
-    aggregate: config.aggregate,
-    apply: config.apply,
+    aggregate,
     wipe: config.wipe,
+
+    async project({ streamId, version, sealed, writer }) {
+      const fold = aggregate.unseal(sealed);
+      if (!fold) {
+        throw new ProjectionAggregateMismatchError(config.name, aggregate.type);
+      }
+      await apply({ ...fold, streamId, version, writer });
+    },
+
+    async replay({ streamId, rows, writer }) {
+      const last = rows.at(-1);
+      if (!last) return false;
+
+      const events = rows.map((row) =>
+        aggregate.events.parseStored({
+          eventType: row.event.eventType,
+          eventRevision: row.eventRevision,
+          payload: row.event.payload,
+          occurredAt: row.event.occurredAt,
+        }),
+      );
+      const state = events.reduce(aggregate.evolve, aggregate.initialState);
+      await apply({ streamId, version: last.streamVersion, writer, state, appended: events });
+      return true;
+    },
   };
 }
 
@@ -48,18 +84,20 @@ export async function rebuild<W>(
       ? tx.projections.filter((p) => p.name === options.projection)
       : tx.projections;
 
+    const wipes: { readonly projection: Projection<W>; readonly wipe: (writer: W) => Promise<void> }[] = [];
     for (const projection of selected) {
       if (!projection.wipe) {
         throw new ProjectionNotRebuildableError(projection.name);
       }
+      wipes.push({ projection, wipe: projection.wipe });
     }
 
     for (const projection of selected) {
       await tx.lockProjectionExclusive(projection.name);
     }
 
-    for (const projection of selected) {
-      await projection.wipe!(tx.writer);
+    for (const { wipe } of wipes) {
+      await wipe(tx.writer);
     }
 
     let streams = 0;
@@ -67,25 +105,9 @@ export async function rebuild<W>(
       const streamIds = await tx.readStreamIds(projection.aggregate.type);
       for (const streamId of streamIds) {
         const rows = await tx.readStream(streamId);
-        const events = rows.map((row) =>
-          projection.aggregate.events.parseStored({
-            eventType: row.event.eventType,
-            eventRevision: row.eventRevision,
-            payload: row.event.payload,
-            occurredAt: row.event.occurredAt,
-          }),
-        );
-        const state = events.reduce(projection.aggregate.evolve, projection.aggregate.initialState);
-        const last = rows.at(-1);
-        if (!last) continue;
-        await projection.apply({
-          streamId,
-          state,
-          appended: events as never,
-          version: last.streamVersion,
-          writer: tx.writer,
-        });
-        streams++;
+        if (await projection.replay({ streamId, rows, writer: tx.writer })) {
+          streams++;
+        }
       }
     }
 

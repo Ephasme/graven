@@ -4,6 +4,8 @@ import { decide } from "./decide.js";
 import { defineEvent } from "./events.js";
 import { ConcurrentModificationError, StaleStreamVersionError } from "./errors.js";
 import { createInMemoryStore } from "./memory.js";
+import { defineProjection } from "./projection.js";
+import { interceptAppend } from "../test/intercept-append.js";
 import { z } from "zod";
 
 const created = defineEvent({ eventType: "counter.created" as const, latestRevision: 1, latest: z.object({}) });
@@ -19,9 +21,9 @@ function makeCounter(elideNoOps = false) {
   return defineAggregate({
     type: "counter",
     events: [created, incremented],
-    initialState: null as State,
+    initialState: null,
     elideNoOps,
-    evolve: (state, event) => {
+    evolve: (state: State, event): State => {
       switch (event.eventType) {
         case "counter.created":
           return { count: 0 };
@@ -118,8 +120,8 @@ describe("decide", () => {
     const counter = defineAggregate({
       type: "counter",
       events: [created],
-      initialState: null as State,
-      evolve: (state, event) => {
+      initialState: null,
+      evolve: (state: State, event): State => {
         seenTimes.push(event.occurredAt);
         return state ?? { count: 0 };
       },
@@ -141,30 +143,15 @@ describe("decide", () => {
 
     // Wraps the real store so the first append attempt fails with StaleStreamVersionError
     // (simulating a concurrent writer), forcing `decide`'s retry loop to run a second attempt
-    // against the same store, which then succeeds. A Proxy over the tx (not a spread) is
-    // required: `EventStore` methods live on the class prototype, which `{ ...tx }` drops.
+    // against the same store, which then succeeds.
     let appendCalls = 0;
-    const flaky: typeof store = {
-      ...store,
-      transaction: (fn) =>
-        store.transaction(async (tx) => {
-          const wrappedTx = new Proxy(tx, {
-            get(target, prop, receiver) {
-              if (prop === "append") {
-                return async (request: Parameters<typeof tx.append>[0]) => {
-                  appendCalls++;
-                  if (appendCalls === 1) {
-                    throw new StaleStreamVersionError(request.streamId, 0, 1);
-                  }
-                  return tx.append(request);
-                };
-              }
-              return Reflect.get(target, prop, receiver);
-            },
-          });
-          return fn(wrappedTx);
-        }),
-    };
+    const flaky = interceptAppend(store, async (request, tx) => {
+      appendCalls++;
+      if (appendCalls === 1) {
+        throw new StaleStreamVersionError(request.streamId, 0, 1);
+      }
+      return tx.append(request);
+    });
 
     const result = await decide(flaky, counter, "c1", () => ({
       emit: [{ eventType: "counter.incremented" as const, payload: { by: 1 } }],
@@ -179,23 +166,9 @@ describe("decide", () => {
     const store = createInMemoryStore();
     const counter = makeCounter();
 
-    const alwaysStale: typeof store = {
-      ...store,
-      transaction: (fn) =>
-        store.transaction(async (tx) => {
-          const wrappedTx = new Proxy(tx, {
-            get(target, prop, receiver) {
-              if (prop === "append") {
-                return async (request: Parameters<typeof tx.append>[0]) => {
-                  throw new StaleStreamVersionError(request.streamId, 0, 1);
-                };
-              }
-              return Reflect.get(target, prop, receiver);
-            },
-          });
-          return fn(wrappedTx);
-        }),
-    };
+    const alwaysStale = interceptAppend(store, async (request) => {
+      throw new StaleStreamVersionError(request.streamId, 0, 1);
+    });
 
     await expect(
       decide(
@@ -213,24 +186,10 @@ describe("decide", () => {
     const counter = makeCounter();
 
     let attempts = 0;
-    const broken: typeof store = {
-      ...store,
-      transaction: (fn) =>
-        store.transaction(async (tx) => {
-          const wrappedTx = new Proxy(tx, {
-            get(target, prop, receiver) {
-              if (prop === "append") {
-                return async () => {
-                  attempts++;
-                  throw new Error("boom");
-                };
-              }
-              return Reflect.get(target, prop, receiver);
-            },
-          });
-          return fn(wrappedTx);
-        }),
-    };
+    const broken = interceptAppend(store, async () => {
+      attempts++;
+      throw new Error("boom");
+    });
 
     await expect(
       decide(broken, counter, "c1", () => ({ emit: [{ eventType: "counter.created" as const, payload: {} }], result: null })),
@@ -240,18 +199,15 @@ describe("decide", () => {
 
   it("skips inline projections entirely when options.projections is false", async () => {
     const rows: string[] = [];
-    const store = createInMemoryStore({
-      projections: [
-        {
-          name: "widgets",
-          aggregate: makeCounter(),
-          apply: async (ctx: { streamId: string }) => {
-            rows.push(ctx.streamId);
-          },
-        },
-      ],
-    });
     const counter = makeCounter();
+    const projection = defineProjection({
+      name: "widgets",
+      aggregate: counter,
+      apply: async (ctx) => {
+        rows.push(ctx.streamId);
+      },
+    });
+    const store = createInMemoryStore({ projections: [projection] });
 
     await decide(
       store,

@@ -10,8 +10,8 @@ export type WalletState = {
 export const wallet = defineAggregate({
   type: "wallet",
   events: walletEvents,
-  initialState: null as WalletState,
-  evolve: (state, event) => {
+  initialState: null,
+  evolve: (state: WalletState, event): WalletState => {
     switch (event.eventType) {
       case "wallet.created":
         return { ownerId: event.payload.ownerId, balanceMinutes: 0, provisionedMinutes: 0 };

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   ConcurrentModificationError,
   DuplicateEventFamilyError,
@@ -31,7 +32,9 @@ describe("GravenError subclasses", () => {
   });
 
   it("InvalidEventPayloadError carries eventType, revision, and the raw issues array", () => {
-    const issues = [{ path: ["name"], message: "required" }];
+    const result = z.object({ name: z.string() }).safeParse({});
+    assert(!result.success);
+    const issues = result.error.issues;
     const error = new InvalidEventPayloadError("widget.created", 1, issues);
     expect(error.code).toBe("GRAVEN_INVALID_EVENT_PAYLOAD");
     expect(error.context.issues).toBe(issues);

@@ -15,11 +15,11 @@ Published to GitHub Packages; see [Install](https://github.com/Les-Sherpas/grave
 ## Usage
 
 ```ts
-import { createSqlEventStore } from "@les-sherpas/graven-sql";
+import { createSqlEventStore, type GravenDatabase } from "@les-sherpas/graven-sql";
 import { Kysely, PostgresDialect } from "kysely";
 import pg from "pg";
 
-const db = new Kysely<any>({
+const db = new Kysely<GravenDatabase>({
   dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: process.env.DATABASE_URL }) }),
 });
 const store = createSqlEventStore({ db, projections: [] });

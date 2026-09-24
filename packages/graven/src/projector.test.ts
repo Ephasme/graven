@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createInMemoryStore } from "./memory.js";
+import { createInMemoryStore, type InMemoryWriter } from "./memory.js";
 import { defineProjector, runProjector, startProjectors } from "./projector.js";
 import { DuplicateProjectorError } from "./errors.js";
+
+type W = InMemoryWriter<Record<never, never>>;
 
 function event(eventId: string) {
   return { eventId, eventType: "widget.created", eventRevision: 1, payload: {}, occurredAt: new Date() };
@@ -21,7 +23,7 @@ describe("runProjector", () => {
     );
 
     const rows: string[] = [];
-    const projector = defineProjector({
+    const projector = defineProjector<W>({
       name: "collector",
       apply: async ({ event: e }) => {
         rows.push(e.eventId);
@@ -50,7 +52,7 @@ describe("runProjector", () => {
     );
 
     const rows: string[] = [];
-    const projector = defineProjector({
+    const projector = defineProjector<W>({
       name: "collector",
       apply: async ({ event: e }) => {
         if (e.eventId === "e2") throw new Error("boom");
@@ -67,8 +69,8 @@ describe("runProjector", () => {
 describe("startProjectors", () => {
   it("throws DuplicateProjectorError for two projectors sharing a name", () => {
     const store = createInMemoryStore();
-    const a = defineProjector({ name: "dup", apply: async () => {} });
-    const b = defineProjector({ name: "dup", apply: async () => {} });
+    const a = defineProjector<W>({ name: "dup", apply: async () => {} });
+    const b = defineProjector<W>({ name: "dup", apply: async () => {} });
 
     expect(() => startProjectors(store, [a, b])).toThrow(DuplicateProjectorError);
   });
@@ -87,7 +89,7 @@ describe("startProjectors", () => {
 
     const rows: string[] = [];
     const { promise: applied, resolve: onApplied } = Promise.withResolvers<void>();
-    const projector = defineProjector({
+    const projector = defineProjector<W>({
       name: "collector",
       apply: async ({ event: e }) => {
         rows.push(e.eventId);
@@ -123,7 +125,7 @@ describe("startProjectors", () => {
       );
 
       const errors: Array<{ error: unknown; name: string }> = [];
-      const failing = defineProjector({
+      const failing = defineProjector<W>({
         name: "failing",
         apply: async () => {
           throw new Error("boom");
@@ -138,11 +140,15 @@ describe("startProjectors", () => {
       // The initial `tick()` call inside `startProjectors` runs synchronously on the
       // microtask queue; flush it before advancing the timer for the next scheduled tick.
       await vi.advanceTimersByTimeAsync(0);
-      expect(errors).toEqual([{ error: expect.any(Error), name: "failing" }]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.error).toBeInstanceOf(Error);
+      expect(errors[0]?.name).toBe("failing");
 
       errors.length = 0;
       await vi.advanceTimersByTimeAsync(100);
-      expect(errors).toEqual([{ error: expect.any(Error), name: "failing" }]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.error).toBeInstanceOf(Error);
+      expect(errors[0]?.name).toBe("failing");
 
       await handle.stop();
     } finally {
@@ -167,7 +173,7 @@ describe("startProjectors", () => {
         metadata: { correlationId: eventId },
       });
 
-    const slow = defineProjector({
+    const slow = defineProjector<W>({
       name: "slow",
       apply: async ({ event: stored }) => {
         inFlight++;
