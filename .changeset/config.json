@@ -1,0 +1,8 @@
+{
+  "$schema": "../node_modules/@changesets/config/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [["@les-sherpas/graven", "@les-sherpas/graven-sql"]],
+  "access": "restricted",
+  "baseBranch": "main"
+}

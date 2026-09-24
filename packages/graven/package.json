@@ -1,0 +1,38 @@
+{
+  "name": "@les-sherpas/graven",
+  "version": "0.1.0",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "dependencies": {
+    "@esfx/async-readerwriterlock": "^1.0.0",
+    "async-mutex": "^0.5.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Les-Sherpas/graven.git",
+    "directory": "packages/graven"
+  }
+}

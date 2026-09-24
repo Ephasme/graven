@@ -1,0 +1,41 @@
+{
+  "name": "@les-sherpas/graven-sql",
+  "version": "0.1.0",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "dependencies": {
+    "@les-sherpas/graven": "workspace:*",
+    "@date-fns/utc": "^2.1.1",
+    "date-fns": "^4.4.0",
+    "db-errors": "^0.2.3"
+  },
+  "peerDependencies": {
+    "kysely": "^0.28.0",
+    "zod": "^4.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Les-Sherpas/graven.git",
+    "directory": "packages/graven-sql"
+  }
+}

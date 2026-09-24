@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: docker compose up -d --wait
+      - run: bun run test:integration
+        env:
+          GRAVEN_POSTGRES_URL: postgres://graven:graven@localhost:55433/graven
+          GRAVEN_MYSQL_URL: mysql://root:graven@localhost:53306/graven
+      - run: bun run build
+
+  # With pending changesets: opens or updates the "Version Packages" PR. After that PR merges:
+  # publishes every version the registry does not have yet.
+  release:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - uses: changesets/action@v2
+        with:
+          version-script: bun run version
+          publish-script: bun run release
+        env:
+          NPM_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,37 @@
+name: graven
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: graven-postgres
+    environment:
+      POSTGRES_USER: graven
+      POSTGRES_PASSWORD: graven
+      POSTGRES_DB: graven
+    # 55433: sherpas-flock's compose.yaml already binds 55432 on the same machine.
+    ports: ["55433:5432"]
+    # Postgres 18 mounts /var/lib/postgresql, not .../data.
+    volumes: ["pgdata:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U graven -d graven"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mariadb:
+    image: mariadb:10.6
+    container_name: graven-mariadb
+    environment:
+      MARIADB_ROOT_PASSWORD: graven
+      MARIADB_DATABASE: graven
+    ports: ["53306:3306"]
+    volumes: ["mysqldata:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -pgraven"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  mysqldata:
