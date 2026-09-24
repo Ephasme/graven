@@ -4,7 +4,7 @@
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -37,5 +37,6 @@
     "type": "git",
     "url": "git+https://github.com/Les-Sherpas/graven.git",
     "directory": "packages/graven-sql"
-  }
+  },
+  "description": "Postgres and MySQL/MariaDB event store for @les-sherpas/graven, on Kysely."
 }
