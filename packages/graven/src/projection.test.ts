@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defineAggregate } from "./aggregate.js";
 import { decide } from "./decide.js";
 import { defineEvent } from "./events.js";
-import { ProjectionNotRebuildableError } from "./errors.js";
+import { ProjectionAggregateMismatchError, ProjectionNotRebuildableError } from "./errors.js";
 import { createInMemoryStore, type InMemoryWriter } from "./memory.js";
 import { defineProjection, rebuild } from "./projection.js";
 import { z } from "zod";
@@ -36,6 +36,34 @@ describe("projections", () => {
     await decide(store, widget, "w1", () => ({ emit: [{ eventType: "widget.created" as const, payload: { name: "a" } }], result: null }));
 
     expect(store.writer.table("widgets").get("w1")).toEqual({ name: "a" });
+  });
+
+  it("decide rejects with ProjectionAggregateMismatchError when a registered projection is bound to another aggregate object", async () => {
+    const twin = defineAggregate({
+      type: "widget",
+      events: [created],
+      initialState: null,
+      evolve: (_state: State, event): State => ({ name: event.payload.name }),
+    });
+
+    const projection = defineProjection<State, readonly [typeof created], InMemoryWriter<Tables>>({
+      name: "widgets",
+      aggregate: twin,
+      apply: async (ctx) => {
+        ctx.writer.table("widgets").set(ctx.streamId, ctx.state);
+      },
+    });
+
+    const store = createInMemoryStore<Tables>({ projections: [projection] });
+
+    await expect(
+      decide(store, widget, "w1", () => ({
+        emit: [{ eventType: "widget.created" as const, payload: { name: "a" } }],
+        result: null,
+      })),
+    ).rejects.toThrow(ProjectionAggregateMismatchError);
+
+    expect(await store.readStream("w1")).toHaveLength(0);
   });
 
   it("a throwing projection rolls back its own writes and calls onProjectionError, without blocking the append", async () => {

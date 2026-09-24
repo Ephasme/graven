@@ -28,7 +28,7 @@
         "async-mutex": "^0.5.0",
       },
       "peerDependencies": {
-        "zod": "^4.0.0",
+        "zod": "^4.3.0",
       },
     },
     "packages/graven-sql": {
@@ -42,7 +42,7 @@
       },
       "peerDependencies": {
         "kysely": "^0.28.0",
-        "zod": "^4.0.0",
+        "zod": "^4.3.0",
       },
     },
   },

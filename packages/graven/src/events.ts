@@ -32,10 +32,12 @@ export type FamilyOf<C extends EventFamilies, K extends EventTypeOf<C>> = Extrac
 
 type UpcasterSchema<F extends AnyEventFamily> = NonNullable<F["previous"]>[number]["parse"];
 
-/** The upcaster half equals the latest half for any concrete C; it is spelled out so the generic decoder typechecks. */
+/** The upcaster half equals the latest half for any concrete C; it is spelled out so the generic
+ * decoder typechecks. Gated on `previous` being a declared key: an inline family literal without
+ * it would otherwise widen the union to `unknown`. */
 export type PayloadOf<C extends EventFamilies, K extends EventTypeOf<C>> =
   | z.output<FamilyOf<C, K>["latest"]>
-  | z.output<UpcasterSchema<FamilyOf<C, K>>>;
+  | ("previous" extends keyof FamilyOf<C, K> ? z.output<UpcasterSchema<FamilyOf<C, K>>> : never);
 
 export type InputOf<C extends EventFamilies, K extends EventTypeOf<C>> = z.input<FamilyOf<C, K>["latest"]>;
 

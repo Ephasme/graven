@@ -37,7 +37,21 @@ export function defineProjector<S, C extends EventFamilies, W>(
       },
 ): Projector<W> {
   if ("aggregate" in config) {
-    return { name: config.name, aggregateType: config.aggregate.type, apply: config.apply };
+    const { name, aggregate, apply } = config;
+    return {
+      name,
+      aggregateType: aggregate.type,
+      // The declared payload is the latest, upcast shape; decode the row before it reaches `apply`.
+      apply: async ({ event, writer }) => {
+        const decoded = aggregate.events.parseStored({
+          eventType: event.event.eventType,
+          eventRevision: event.eventRevision,
+          payload: event.event.payload,
+          occurredAt: event.event.occurredAt,
+        });
+        await apply({ writer, event: { ...event, event: decoded } });
+      },
+    };
   }
   return { name: config.name, aggregateType: undefined, apply: config.apply };
 }

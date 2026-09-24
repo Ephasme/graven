@@ -76,7 +76,11 @@ async function selectRows<DB, O, S extends z.ZodType>(
   return result.data;
 }
 
-const dbInteger = z.union([z.int(), z.string().regex(/^-?\d+$/).transform(Number).pipe(z.int())]);
+const dbInteger = z.union([
+  z.int(),
+  z.bigint().transform(Number).pipe(z.int()),
+  z.string().regex(/^-?\d+$/).transform(Number).pipe(z.int()),
+]);
 
 const jsonText = z.string().transform((text, ctx): unknown => {
   try {
@@ -122,7 +126,7 @@ const storedEventRowShape = {
   metadata: metadataColumn,
 };
 
-function storedEventRowSchema(timestamp: z.ZodType<Date, Date | string>): z.ZodType<StoredEvent, unknown> {
+function storedEventRowSchema(timestamp: z.ZodType<Date, Date | string>) {
   return z
     .object({ ...storedEventRowShape, occurred_at: timestamp, recorded_at: timestamp })
     .transform(
@@ -140,6 +144,10 @@ function storedEventRowSchema(timestamp: z.ZodType<Date, Date | string>): z.ZodT
     );
 }
 
+/** The row `selectRows` must be handed for a `StoredEvent` to decode: typing the schema by its
+ * input keeps the drift guard live, so a select list missing a column fails to compile. */
+type StoredEventRow = z.input<ReturnType<typeof storedEventRowSchema>>;
+
 /** What differs between the two databases once Kysely has compiled the query. */
 type Flavor = {
   readonly kind: "postgres" | "mysql";
@@ -153,8 +161,7 @@ type Flavor = {
   /** Kysely compiles `forShare()` to `for share`, which MariaDB rejects. */
   readonly shareLock: ReturnType<typeof sql>;
   readonly writeTimestamp: (value: Date) => Date | string;
-  readonly timestamp: z.ZodType<Date, Date | string>;
-  readonly storedEventRow: z.ZodType<StoredEvent, unknown>;
+  readonly storedEventRow: z.ZodType<StoredEvent, StoredEventRow>;
 };
 
 const postgres: Flavor = {
@@ -166,7 +173,6 @@ const postgres: Flavor = {
   timestampSelectType: "timestamptz",
   shareLock: sql`for share`,
   writeTimestamp: (value) => value,
-  timestamp: postgresTimestamp,
   storedEventRow: storedEventRowSchema(postgresTimestamp),
 };
 
@@ -183,7 +189,6 @@ const mysql: Flavor = {
   timestampSelectType: "char",
   shareLock: sql`lock in share mode`,
   writeTimestamp: (value) => format(value, UTC_DATETIME, { in: utc }),
-  timestamp: mysqlTimestamp,
   storedEventRow: storedEventRowSchema(mysqlTimestamp),
 };
 

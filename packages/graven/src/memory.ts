@@ -18,7 +18,9 @@ export class InMemoryWriter<T extends object> {
 
   /** The table's rows by key; created empty on first access. */
   table<K extends keyof T & string>(name: K): Map<string, T[K]> {
-    let table = this.#tables[name];
+    // `hasOwn` first: a plain-object `#tables` otherwise returns `Object.prototype[name]` for
+    // names like `constructor`, typed as a Map but not one.
+    let table = Object.hasOwn(this.#tables, name) ? this.#tables[name] : undefined;
     if (!table) {
       table = new Map();
       this.#tables[name] = table;

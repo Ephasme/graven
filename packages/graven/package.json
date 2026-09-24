@@ -24,7 +24,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "peerDependencies": {
-    "zod": "^4.0.0"
+    "zod": "^4.3.0"
   },
   "dependencies": {
     "@esfx/async-readerwriterlock": "^1.0.0",

@@ -10,4 +10,6 @@ export type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue | undefined };
 
+/** Decodes the post-stringify shape: `z.json()` rejects an explicit `undefined` member, so a
+ * `JsonValue` that only satisfies the type via `| undefined` does not parse. */
 export const jsonValueSchema: z.ZodType<JsonValue> = z.json();

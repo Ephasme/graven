@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createInMemoryStore, type InMemoryWriter } from "./memory.js";
 import { defineProjector, runProjector, startProjectors } from "./projector.js";
 import { DuplicateProjectorError } from "./errors.js";
+import { wallet, type WalletState } from "../test/fixtures/wallet/aggregate.js";
+import { walletEvents } from "../test/fixtures/wallet/events.js";
 
 type W = InMemoryWriter<Record<never, never>>;
 
@@ -63,6 +65,42 @@ describe("runProjector", () => {
     await expect(runProjector(store, projector)).rejects.toThrow("boom");
     expect(rows).toEqual(["e1"]);
     expect(await store.readCheckpoint("collector")).toBe(1);
+  });
+
+  it("a projector bound to an aggregate receives the upcast, parsed payload", async () => {
+    const store = createInMemoryStore();
+    await store.transaction((tx) =>
+      tx.append({
+        streamId: "wallet-legacy",
+        aggregateType: "wallet",
+        expected: { kind: "no-stream" },
+        events: [
+          {
+            eventId: "evt-1",
+            eventType: "wallet.provisioned",
+            eventRevision: 1,
+            payload: { minutes: 50 },
+            occurredAt: new Date("2025-01-01T00:00:00.000Z"),
+          },
+        ],
+        metadata: { correlationId: "c1" },
+      }),
+    );
+
+    const payloads: Array<{ readonly minutes: number; readonly source: string }> = [];
+    const projector = defineProjector<WalletState, typeof walletEvents, W>({
+      name: "wallet-provisioned",
+      aggregate: wallet,
+      apply: async ({ event: stored }) => {
+        if (stored.event.eventType !== "wallet.provisioned") {
+          throw new Error(`unexpected event ${stored.event.eventType}`);
+        }
+        payloads.push(stored.event.payload);
+      },
+    });
+
+    expect(await runProjector(store, projector)).toBe(1);
+    expect(payloads).toEqual([{ minutes: 50, source: "legacy" }]);
   });
 });
 
