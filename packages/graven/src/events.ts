@@ -1,11 +1,16 @@
-import type { z } from "zod";
+import { z } from "zod";
 import { InvalidEventFamilyError, InvalidEventPayloadError, UnknownEventRevisionError, UnknownEventTypeError } from "./errors.js";
 import type { JsonValue } from "./json.js";
 import type { StoredEvent, TimedEvent } from "./types.js";
 
-export type Upcaster<P> = { readonly revision: number; readonly parse: z.ZodType<P, unknown> };
+/** A schema bound on the core `$ZodType`, not classic `z.ZodType`: libraries augment the classic
+ * interface (zod-to-openapi adds `openapi(metadata: …Input…): this`), and checking a concrete
+ * schema against the augmented interface fails with TS2589. */
+export type SchemaOf<O> = z.core.$ZodType<O, unknown>;
 
-export type EventFamily<T extends string, S extends z.ZodType<JsonValue, unknown>> = {
+export type Upcaster<P> = { readonly revision: number; readonly parse: SchemaOf<P> };
+
+export type EventFamily<T extends string, S extends SchemaOf<JsonValue>> = {
   readonly eventType: T;
   readonly latestRevision: number;
   /** Payload schema: validates an insert, and parses a row stored at latestRevision. */
@@ -15,12 +20,12 @@ export type EventFamily<T extends string, S extends z.ZodType<JsonValue, unknown
 };
 
 /** Any family: the constraint every event-set parameter takes. */
-export type AnyEventFamily = EventFamily<string, z.ZodType<JsonValue, unknown>>;
+export type AnyEventFamily = EventFamily<string, SchemaOf<JsonValue>>;
 
 export type EventFamilies = readonly AnyEventFamily[];
 
 /** Identity; exists so `eventType` infers as a literal and the schema's input type is kept. */
-export function defineEvent<const T extends string, S extends z.ZodType<JsonValue, unknown>>(
+export function defineEvent<const T extends string, S extends SchemaOf<JsonValue>>(
   family: EventFamily<T, S>,
 ): EventFamily<T, S> {
   return family;
@@ -96,13 +101,13 @@ function isFamilyOf<C extends EventFamilies, K extends EventTypeOf<C>>(
   return family.eventType === eventType;
 }
 
-function parsePayload<S extends z.ZodType>(
+function parsePayload<S extends z.core.$ZodType>(
   schema: S,
   value: unknown,
   eventType: string,
   revision: number,
 ): z.output<S> {
-  const result = schema.safeParse(value);
+  const result = z.safeParse(schema, value);
   if (!result.success) {
     throw new InvalidEventPayloadError(eventType, revision, result.error.issues);
   }
