@@ -16,7 +16,7 @@ export async function execute<DB>(
 
 /** `schema` must accept every row Kysely types the query as returning, so the decoder cannot
  * drift from the select list. */
-export async function selectRows<DB, O, S extends z.ZodType>(
+export async function selectRows<DB, O, S extends z.core.$ZodType>(
   db: Kysely<DB>,
   table: GravenTable,
   query: { toOperationNode(): RootOperationNode } & Compilable<O>,
