@@ -1,5 +1,12 @@
 # @les-sherpas/graven-sql
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [a22242c]
+  - @les-sherpas/graven@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes

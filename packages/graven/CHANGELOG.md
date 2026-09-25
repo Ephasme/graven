@@ -1,5 +1,11 @@
 # @les-sherpas/graven
 
+## 0.3.1
+
+### Patch Changes
+
+- a22242c: Fix TS2589 in `defineEvent`/`defineEvents` when zod's `ZodType` is augmented (e.g. by `@hono/zod-openapi`); schema bounds now use `z.core.$ZodType`.
+
 ## 0.3.0
 
 ### Minor Changes
