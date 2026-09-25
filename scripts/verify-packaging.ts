@@ -9,54 +9,47 @@
  * published consumer. See `scripts/build.ts`.
  */
 
-type PackageSpec = {
-  readonly name: string;
-  /** Siblings this package's dist MUST import at runtime rather than inline. */
-  readonly siblingDependencies: readonly string[];
-};
+import { packages, type PackageSpec } from "./packages.js";
 
-const packages: readonly PackageSpec[] = [
-  { name: "graven", siblingDependencies: [] },
-  { name: "graven-sql", siblingDependencies: ["@les-sherpas/graven"] },
-];
+async function checkBundle(pkg: PackageSpec, bundle: string): Promise<readonly string[]> {
+  const path = `${import.meta.dir}/../packages/${pkg.name}/dist/${bundle}`;
+  const file = Bun.file(path);
+  if (!(await file.exists())) {
+    return [`FAIL ${pkg.name}: ${bundle} does not exist — run \`bun run build\` first`];
+  }
+
+  const text = await file.text();
+  const messages: string[] = [];
+
+  if (text.includes("workspace:")) {
+    messages.push(`FAIL ${pkg.name}/dist/${bundle}: contains a literal "workspace:" — a raw workspace protocol string leaked into the bundle`);
+  }
+
+  for (const dep of pkg.siblingDependencies) {
+    if (!text.includes(dep)) {
+      messages.push(
+        `FAIL ${pkg.name}/dist/${bundle}: expected an import of "${dep}" but found none — the sibling was likely inlined instead of imported (missing --external in scripts/build.ts?)`,
+      );
+    }
+  }
+
+  // A duplicated class definition is the concrete symptom of an inlined sibling.
+  if (pkg.name !== "graven" && text.includes("class GravenError")) {
+    messages.push(
+      `FAIL ${pkg.name}/dist/${bundle}: contains "class GravenError" — the graven core was inlined into this bundle instead of staying external`,
+    );
+  }
+
+  return messages;
+}
 
 let failed = false;
 
 for (const pkg of packages) {
-  const dir = `${import.meta.dir}/../packages/${pkg.name}`;
-
-  for (const ext of ["index.js", "index.cjs"]) {
-    const path = `${dir}/dist/${ext}`;
-    const file = Bun.file(path);
-    if (!(await file.exists())) {
-      console.error(`FAIL ${pkg.name}: ${ext} does not exist — run \`bun run build\` first`);
-      failed = true;
-      continue;
-    }
-
-    const text = await file.text();
-
-    if (text.includes("workspace:")) {
-      console.error(`FAIL ${pkg.name}/dist/${ext}: contains a literal "workspace:" — a raw workspace protocol string leaked into the bundle`);
-      failed = true;
-    }
-
-    for (const dep of pkg.siblingDependencies) {
-      if (!text.includes(dep)) {
-        console.error(
-          `FAIL ${pkg.name}/dist/${ext}: expected an import of "${dep}" but found none — the sibling was likely inlined instead of imported (missing --external in scripts/build.ts?)`,
-        );
-        failed = true;
-      }
-    }
-
-    // A duplicated class definition is the concrete symptom of an inlined sibling.
-    if (pkg.name !== "graven" && text.includes("class GravenError")) {
-      console.error(
-        `FAIL ${pkg.name}/dist/${ext}: contains "class GravenError" — the graven core was inlined into this bundle instead of staying external`,
-      );
-      failed = true;
-    }
+  for (const bundle of ["index.js", "index.cjs"]) {
+    const messages = await checkBundle(pkg, bundle);
+    for (const message of messages) console.error(message);
+    if (messages.length > 0) failed = true;
   }
 }
 

@@ -10,8 +10,7 @@
  */
 import { appendFile } from "node:fs/promises";
 import { z } from "zod";
-
-const packages = ["graven", "graven-sql"];
+import { packages } from "./packages.js";
 
 async function run(cmd: string[], cwd: string): Promise<{ exitCode: number; stderr: string }> {
   const proc = Bun.spawn(cmd, { cwd, stdout: "inherit", stderr: "pipe" });
@@ -29,7 +28,7 @@ async function isPublished(name: string, version: string, cwd: string): Promise<
 
 const output = process.env.CHANGESETS_OUTPUT;
 
-for (const dir of packages.map((name) => `${import.meta.dir}/../packages/${name}`)) {
+for (const dir of packages.map(({ name }) => `${import.meta.dir}/../packages/${name}`)) {
   const { name, version } = z.object({ name: z.string(), version: z.string() }).parse(await Bun.file(`${dir}/package.json`).json());
   if (await isPublished(name, version, dir)) {
     console.log(`${name}@${version} already published`);

@@ -2,13 +2,13 @@ import { defineEvents } from "./events.js";
 import type { EventFamilies, EventOf, EventRegistry } from "./events.js";
 import type { TimedEvent } from "./types.js";
 
-export type Fold<S, C extends EventFamilies> = {
+export type StateWithEvents<S, C extends EventFamilies> = {
   readonly state: S;
   readonly appended: readonly TimedEvent<EventOf<C>>[];
 };
 
 /** Opaque handle on one decision's fold; only the aggregate that sealed it can open it. */
-export type SealedFold = { readonly aggregateType: string };
+export type SealedStateWithEvents = { readonly aggregateType: string };
 
 export interface Aggregate<S, C extends EventFamilies> {
   readonly type: string;
@@ -18,8 +18,8 @@ export interface Aggregate<S, C extends EventFamilies> {
   /** Default false. When true, an event whose evolve returns the same reference is dropped. */
   readonly elideNoOps: boolean;
   /** decide → projection handoff: seal a fold so a projection defined over this exact aggregate can read it typed. */
-  seal(fold: Fold<S, C>): SealedFold;
-  unseal(sealed: SealedFold): Fold<S, C> | undefined;
+  seal(fold: StateWithEvents<S, C>): SealedStateWithEvents;
+  unseal(sealed: SealedStateWithEvents): StateWithEvents<S, C> | undefined;
 }
 
 export function defineAggregate<S, const C extends EventFamilies>(config: {
@@ -29,7 +29,7 @@ export function defineAggregate<S, const C extends EventFamilies>(config: {
   readonly evolve: (state: S, event: TimedEvent<EventOf<C>>) => S;
   readonly elideNoOps?: boolean;
 }): Aggregate<S, C> {
-  const folds = new WeakMap<SealedFold, Fold<S, C>>();
+  const folds = new WeakMap<SealedStateWithEvents, StateWithEvents<S, C>>();
 
   return {
     type: config.type,
@@ -39,7 +39,7 @@ export function defineAggregate<S, const C extends EventFamilies>(config: {
     elideNoOps: config.elideNoOps ?? false,
 
     seal(fold) {
-      const token: SealedFold = Object.freeze({ aggregateType: config.type });
+      const token: SealedStateWithEvents = Object.freeze({ aggregateType: config.type });
       folds.set(token, fold);
       return token;
     },

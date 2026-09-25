@@ -1,4 +1,4 @@
-import type { InMemoryWriter } from "../../../src/memory.js";
+import type { InMemoryWriter } from "../../../src/memory-tables.js";
 import { defineProjection } from "../../../src/projection.js";
 import { assignment, type AssignmentState } from "./aggregate.js";
 import type { assignmentEvents } from "./events.js";

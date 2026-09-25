@@ -350,7 +350,7 @@ Every export has a TypeScript declaration and a doc comment; this section is a m
 |---|---|
 | `defineEvent`, `defineEvents` | Declare an event family; build a registry that validates and upcasts payloads. |
 | `defineAggregate`, `fold` | Declare an aggregate; fold events into its state. |
-| `decide` | Lock, fold, decide, append and project in one transaction. Options: `metadata`, `occurredAt`, `clock`, `newId`, `maxAttempts`, `initialDelayMs`, `projections`. |
+| `decide` | Lock, fold, decide, append and project in one transaction. Options: `metadata`, `occurredAt`, `clock`, `newId`, `maxAttempts`, `initialDelayMs`, `runInlineProjections`. |
 | `defineProjection`, `rebuild` | Inline read model; regenerate it from the log. |
 | `defineProjector`, `runProjector`, `startProjectors` | Catch-up projector; one pass; a scheduler. |
 | `createInMemoryStore` | A store with no database, for tests. |
@@ -362,7 +362,7 @@ Every error extends `GravenError` and has a stable `code` and a `context` object
 |---|---|
 | `InvalidEventPayloadError` | A payload fails its schema. `context.issues` holds the zod issues. |
 | `UnknownEventTypeError`, `UnknownEventRevisionError` | A row has a type or revision the aggregate doesn't declare. |
-| `DuplicateEventFamilyError` | Two families share a type, or a family's revisions are missing or out of range. |
+| `InvalidEventFamilyError` | An aggregate's event families are invalid: two share a type, a revision is missing or out of range, or an upcaster is missing. `context.defect` names which. |
 | `DuplicateEventIdError` | An `eventId` is already in the log. |
 | `StaleStreamVersionError`, `StreamVersionConflictError` | The stream moved between the read and the append. `decide` retries on both. |
 | `ConcurrentModificationError` | `decide` ran out of attempts. |

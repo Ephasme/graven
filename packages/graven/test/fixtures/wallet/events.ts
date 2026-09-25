@@ -6,25 +6,25 @@
 import { defineEvent } from "../../../src/events.js";
 import { z } from "zod";
 
-export const walletCreated = defineEvent({
+const walletCreated = defineEvent({
   eventType: "wallet.created" as const,
   latestRevision: 1,
   latest: z.object({ ownerId: z.string() }),
 });
 
-export const walletBooked = defineEvent({
+const walletBooked = defineEvent({
   eventType: "wallet.booked" as const,
   latestRevision: 1,
   latest: z.object({ minutes: z.number().positive() }),
 });
 
-export const walletCancelled = defineEvent({
+const walletCancelled = defineEvent({
   eventType: "wallet.cancelled" as const,
   latestRevision: 1,
   latest: z.object({ minutes: z.number().positive() }),
 });
 
-export const walletFinished = defineEvent({
+const walletFinished = defineEvent({
   eventType: "wallet.finished" as const,
   latestRevision: 1,
   latest: z.object({ minutes: z.number().positive() }),
@@ -33,7 +33,7 @@ export const walletFinished = defineEvent({
 const walletProvisionedV1 = z.object({ minutes: z.number() });
 const walletProvisionedLatest = z.object({ minutes: z.number(), source: z.string() });
 
-export const walletProvisioned = defineEvent({
+const walletProvisioned = defineEvent({
   eventType: "wallet.provisioned" as const,
   latestRevision: 2,
   latest: walletProvisionedLatest,

@@ -197,26 +197,28 @@ describe("decide", () => {
     expect(attempts).toBe(1);
   });
 
-  it("skips inline projections entirely when options.projections is false", async () => {
+  it("skips inline projections entirely when options.runInlineProjections is false, even for a projection built over a different aggregate object", async () => {
     const rows: string[] = [];
     const counter = makeCounter();
+    const otherCounter = makeCounter();
     const projection = defineProjection({
       name: "widgets",
-      aggregate: counter,
+      aggregate: otherCounter,
       apply: async (ctx) => {
         rows.push(ctx.streamId);
       },
     });
     const store = createInMemoryStore({ projections: [projection] });
 
-    await decide(
+    const result = await decide(
       store,
       counter,
       "c1",
       () => ({ emit: [{ eventType: "counter.created" as const, payload: {} }], result: null }),
-      { projections: false },
+      { runInlineProjections: false },
     );
 
+    expect(result.appended).toBe(true);
     expect(rows).toEqual([]);
   });
 });

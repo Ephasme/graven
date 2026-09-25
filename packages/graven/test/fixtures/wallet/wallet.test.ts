@@ -28,14 +28,7 @@ describe("wallet aggregate (upcasting fixture)", () => {
     const rows = await store.readStream(streamId);
     expect(rows.map((e) => e.event.occurredAt)).toEqual(clockValues);
 
-    const events = rows.map((row) =>
-      wallet.events.parseStored({
-        eventType: row.event.eventType,
-        eventRevision: row.eventRevision,
-        payload: row.event.payload,
-        occurredAt: row.event.occurredAt,
-      }),
-    );
+    const events = rows.map((row) => wallet.events.parseStored(row));
     const finalState = fold(wallet, events);
     expect(finalState).toEqual({ ownerId: "user-1", balanceMinutes: 70, provisionedMinutes: 100 });
   });
@@ -69,12 +62,7 @@ describe("wallet aggregate (upcasting fixture)", () => {
 
     const [first] = rows;
     assert(first !== undefined);
-    const parsed = wallet.events.parseStored({
-      eventType: first.event.eventType,
-      eventRevision: first.eventRevision,
-      payload: first.event.payload,
-      occurredAt: first.event.occurredAt,
-    });
+    const parsed = wallet.events.parseStored(first);
 
     expect(first.eventRevision).toBe(1);
     expect(parsed.payload).toEqual({ minutes: 50, source: "legacy" });

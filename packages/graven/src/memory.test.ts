@@ -161,23 +161,6 @@ describe("createInMemoryStore", () => {
     expect(afterOne.map((e) => e.eventId)).toEqual(["e2", "e3"]);
   });
 
-  it("readStreams returns an empty array for an unknown id", async () => {
-    const store = createInMemoryStore();
-    await store.transaction((tx) =>
-      tx.append({
-        streamId: "s1",
-        aggregateType: "widget",
-        expected: { kind: "no-stream" },
-        events: [event("e1")],
-        metadata: { correlationId: "c1" },
-      }),
-    );
-
-    const map = await store.readStreams(["s1", "unknown"]);
-    expect(map.get("s1")?.length).toBe(1);
-    expect(map.get("unknown")).toEqual([]);
-  });
-
   it("checkpoints default to 0 and persist across transactions", async () => {
     const store = createInMemoryStore();
     expect(await store.readCheckpoint("proj")).toBe(0);
@@ -212,11 +195,6 @@ describe("createInMemoryStore", () => {
     expect(store.writer.table("t").has("b")).toBe(false);
     expect(store.writer.table("t").get("a")).toBe(1);
     expect((await store.readStream("s1")).length).toBe(1);
-  });
-
-  it("savepoint throws outside a transaction", async () => {
-    const store = createInMemoryStore();
-    await expect(store.savepoint(async () => {})).rejects.toThrow();
   });
 
   it("a transaction that throws leaves rows another transaction committed meanwhile intact", async () => {
@@ -438,5 +416,25 @@ describe("createInMemoryStore", () => {
     const result = await decide(store, widget, "s1", () => ({ emit: [{ eventType: "widget.created" as const, payload: {} }], result: null }));
 
     expect(result.appended).toBe(true);
+  });
+
+  it("a shared projection lock upgraded to exclusive blocks another transaction's shared lock until commit", async () => {
+    const store = createInMemoryStore();
+    const order: string[] = [];
+    const { promise: upgraded, resolve: markUpgraded } = Promise.withResolvers<void>();
+    const holder = store.transaction(async (tx) => {
+      await tx.lockProjectionShared("p");
+      await tx.lockProjectionExclusive("p");
+      markUpgraded();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      order.push("holder-commits");
+    });
+    await upgraded;
+    const reader = store.transaction(async (tx) => {
+      await tx.lockProjectionShared("p");
+      order.push("reader-locked");
+    });
+    await Promise.all([holder, reader]);
+    expect(order).toEqual(["holder-commits", "reader-locked"]);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createInMemoryStore, type InMemoryWriter } from "./memory.js";
+import { createInMemoryStore } from "./memory.js";
+import type { InMemoryWriter } from "./memory-tables.js";
 import { defineProjector, runProjector, startProjectors } from "./projector.js";
 import { DuplicateProjectorError } from "./errors.js";
 import { wallet, type WalletState } from "../test/fixtures/wallet/aggregate.js";
@@ -27,7 +28,7 @@ describe("runProjector", () => {
     const rows: string[] = [];
     const projector = defineProjector<W>({
       name: "collector",
-      apply: async ({ event: e }) => {
+      apply: async ({ stored: e }) => {
         rows.push(e.eventId);
       },
     });
@@ -39,6 +40,33 @@ describe("runProjector", () => {
 
     const second = await runProjector(store, projector);
     expect(second).toBe(0);
+  });
+
+  it("two concurrent runners of one projector apply each event exactly once", async () => {
+    const store = createInMemoryStore();
+    await store.transaction((tx) =>
+      tx.append({
+        streamId: "s1",
+        aggregateType: "widget",
+        expected: { kind: "no-stream" },
+        events: [event("e1"), event("e2"), event("e3")],
+        metadata: { correlationId: "c1" },
+      }),
+    );
+
+    const rows: string[] = [];
+    const projector = defineProjector<W>({
+      name: "collector",
+      apply: async ({ stored }) => {
+        rows.push(stored.eventId);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      },
+    });
+
+    const [a, b] = await Promise.all([runProjector(store, projector), runProjector(store, projector)]);
+    expect(rows).toEqual(["e1", "e2", "e3"]);
+    expect(a + b).toBe(3);
+    expect(await store.readCheckpoint("collector")).toBe(3);
   });
 
   it("leaves the checkpoint at the last successful event when apply throws", async () => {
@@ -56,7 +84,7 @@ describe("runProjector", () => {
     const rows: string[] = [];
     const projector = defineProjector<W>({
       name: "collector",
-      apply: async ({ event: e }) => {
+      apply: async ({ stored: e }) => {
         if (e.eventId === "e2") throw new Error("boom");
         rows.push(e.eventId);
       },
@@ -91,7 +119,7 @@ describe("runProjector", () => {
     const projector = defineProjector<WalletState, typeof walletEvents, W>({
       name: "wallet-provisioned",
       aggregate: wallet,
-      apply: async ({ event: stored }) => {
+      apply: async ({ stored }) => {
         if (stored.event.eventType !== "wallet.provisioned") {
           throw new Error(`unexpected event ${stored.event.eventType}`);
         }
@@ -129,7 +157,7 @@ describe("startProjectors", () => {
     const { promise: applied, resolve: onApplied } = Promise.withResolvers<void>();
     const projector = defineProjector<W>({
       name: "collector",
-      apply: async ({ event: e }) => {
+      apply: async ({ stored: e }) => {
         rows.push(e.eventId);
         onApplied();
       },
@@ -213,7 +241,7 @@ describe("startProjectors", () => {
 
     const slow = defineProjector<W>({
       name: "slow",
-      apply: async ({ event: stored }) => {
+      apply: async ({ stored }) => {
         inFlight++;
         maxInFlight = Math.max(maxInFlight, inFlight);
         if (stored.eventId === "e1") {

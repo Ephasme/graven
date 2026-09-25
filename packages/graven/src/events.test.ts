@@ -1,7 +1,35 @@
 import { describe, expect, it, assert } from "vitest";
-import { DuplicateEventFamilyError, InvalidEventPayloadError, UnknownEventRevisionError, UnknownEventTypeError } from "./errors.js";
+import type { EventFamilyDefect } from "./errors.js";
+import { InvalidEventFamilyError, InvalidEventPayloadError, UnknownEventRevisionError, UnknownEventTypeError } from "./errors.js";
 import { defineEvent, defineEvents } from "./events.js";
+import type { JsonValue } from "./json.js";
+import type { StoredEvent } from "./types.js";
 import { z } from "zod";
+
+function stored(eventType: string, eventRevision: number, payload: JsonValue): StoredEvent {
+  const at = new Date("2026-01-01T00:00:00.000Z");
+  return {
+    globalPosition: 1,
+    streamId: "s1",
+    streamVersion: 1,
+    aggregateType: "widget",
+    eventId: "e1",
+    eventRevision,
+    event: { eventType, payload, occurredAt: at },
+    metadata: { correlationId: "c1" },
+    recordedAt: at,
+  };
+}
+
+function familyDefect(build: () => unknown): EventFamilyDefect | undefined {
+  try {
+    build();
+  } catch (error) {
+    if (error instanceof InvalidEventFamilyError) return error.context.defect;
+    throw error;
+  }
+  return undefined;
+}
 
 describe("defineEvents", () => {
   it("parses an insertable at the latest revision", () => {
@@ -34,7 +62,7 @@ describe("defineEvents", () => {
     ]);
 
     try {
-      registry.parseStored({ eventType: "widget.created", eventRevision: 1, payload: { name: 1 }, occurredAt: new Date() });
+      registry.parseStored(stored("widget.created", 1, { name: 1 }));
       expect.unreachable();
     } catch (error) {
       assert(error instanceof InvalidEventPayloadError);
@@ -59,12 +87,7 @@ describe("defineEvents", () => {
       }),
     ]);
 
-    const event = registry.parseStored({
-      eventType: "widget.created",
-      eventRevision: 1,
-      payload: { name: "a" },
-      occurredAt: new Date("2026-01-01T00:00:00.000Z"),
-    });
+    const event = registry.parseStored(stored("widget.created", 1, { name: "a" }));
 
     expect(event.payload).toEqual({ name: "a", sku: "unknown" });
   });
@@ -74,113 +97,93 @@ describe("defineEvents", () => {
       defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
     ]);
 
-    expect(() =>
-      registry.parseStored({
-        eventType: "widget.created",
-        eventRevision: 5,
-        payload: {},
-        occurredAt: new Date(),
-      }),
-    ).toThrow(UnknownEventRevisionError);
+    expect(() => registry.parseStored(stored("widget.created", 5, {}))).toThrow(UnknownEventRevisionError);
   });
 
-  it("throws DuplicateEventFamilyError for a repeated event type", () => {
-    expect(() =>
-      defineEvents([
-        defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
-        defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
-      ]),
-    ).toThrow(DuplicateEventFamilyError);
+  it("throws InvalidEventFamilyError('duplicate-type') for a repeated event type", () => {
+    expect(
+      familyDefect(() =>
+        defineEvents([
+          defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
+          defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
+        ]),
+      ),
+    ).toBe("duplicate-type");
   });
 
-  it("throws DuplicateEventFamilyError when a previous revision is missing from the chain", () => {
-    expect(() =>
-      defineEvents([
-        defineEvent({
-          eventType: "widget.created",
-          latestRevision: 3,
-          latest: z.object({}),
-          previous: [{ revision: 1, parse: z.object({}) }],
-        }),
-      ]),
-    ).toThrow(DuplicateEventFamilyError);
+  it("throws InvalidEventFamilyError('missing-upcaster') when a previous revision is missing from the chain", () => {
+    expect(
+      familyDefect(() =>
+        defineEvents([
+          defineEvent({
+            eventType: "widget.created",
+            latestRevision: 3,
+            latest: z.object({}),
+            previous: [{ revision: 1, parse: z.object({}) }],
+          }),
+        ]),
+      ),
+    ).toBe("missing-upcaster");
   });
 
-  it("throws DuplicateEventFamilyError for a repeated revision within one family's previous chain", () => {
-    expect(() =>
-      defineEvents([
-        defineEvent({
-          eventType: "widget.created",
-          latestRevision: 3,
-          latest: z.object({}),
-          previous: [
-            { revision: 1, parse: z.object({}) },
-            { revision: 1, parse: z.object({}) },
-            { revision: 2, parse: z.object({}) },
-          ],
-        }),
-      ]),
-    ).toThrow(DuplicateEventFamilyError);
+  it("throws InvalidEventFamilyError('duplicate-revision') for a repeated revision within one family's previous chain", () => {
+    expect(
+      familyDefect(() =>
+        defineEvents([
+          defineEvent({
+            eventType: "widget.created",
+            latestRevision: 3,
+            latest: z.object({}),
+            previous: [
+              { revision: 1, parse: z.object({}) },
+              { revision: 1, parse: z.object({}) },
+              { revision: 2, parse: z.object({}) },
+            ],
+          }),
+        ]),
+      ),
+    ).toBe("duplicate-revision");
   });
 
-  it("throws DuplicateEventFamilyError for a previous revision at or above latestRevision", () => {
+  it("throws InvalidEventFamilyError('revision-out-of-range') for a previous revision at or above latestRevision", () => {
     // Every revision 1..latestRevision-1 is present and valid, isolating the range check
     // (entry.revision >= family.latestRevision) from the chain-completeness check.
-    expect(() =>
-      defineEvents([
-        defineEvent({
-          eventType: "widget.created",
-          latestRevision: 3,
-          latest: z.object({}),
-          previous: [
-            { revision: 1, parse: z.object({}) },
-            { revision: 2, parse: z.object({}) },
-            { revision: 3, parse: z.object({}) },
-          ],
-        }),
-      ]),
-    ).toThrow(DuplicateEventFamilyError);
+    expect(
+      familyDefect(() =>
+        defineEvents([
+          defineEvent({
+            eventType: "widget.created",
+            latestRevision: 3,
+            latest: z.object({}),
+            previous: [
+              { revision: 1, parse: z.object({}) },
+              { revision: 2, parse: z.object({}) },
+              { revision: 3, parse: z.object({}) },
+            ],
+          }),
+        ]),
+      ),
+    ).toBe("revision-out-of-range");
   });
 
-  it("throws DuplicateEventFamilyError for a previous revision below 1", () => {
+  it("throws InvalidEventFamilyError('revision-out-of-range') for a previous revision below 1", () => {
     // Revision 1 is also present and valid, isolating the range check (entry.revision < 1)
     // from the chain-completeness check.
-    expect(() =>
-      defineEvents([
-        defineEvent({
-          eventType: "widget.created",
-          latestRevision: 2,
-          latest: z.object({}),
-          previous: [
-            { revision: 0, parse: z.object({}) },
-            { revision: 1, parse: z.object({}) },
-          ],
-        }),
-      ]),
-    ).toThrow(DuplicateEventFamilyError);
-  });
-
-  it("registry.latestRevision returns the family's latest revision", () => {
-    const registry = defineEvents([
-      defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
-      defineEvent({
-        eventType: "widget.renamed",
-        latestRevision: 2,
-        latest: z.object({ name: z.string() }),
-        previous: [{ revision: 1, parse: z.object({ oldName: z.string() }).transform((v) => ({ name: v.oldName })) }],
-      }),
-    ]);
-
-    expect(registry.latestRevision("widget.created")).toBe(1);
-    expect(registry.latestRevision("widget.renamed")).toBe(2);
-  });
-
-  it("registry.latestRevision throws UnknownEventTypeError for an unregistered type", () => {
-    const registry = defineEvents([
-      defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
-    ]);
-    // @ts-expect-error unregistered event type is rejected at compile time too
-    expect(() => registry.latestRevision("widget.deleted")).toThrow(UnknownEventTypeError);
+    expect(
+      familyDefect(() =>
+        defineEvents([
+          defineEvent({
+            eventType: "widget.created",
+            latestRevision: 2,
+            latest: z.object({}),
+            previous: [
+              { revision: 0, parse: z.object({}) },
+              { revision: 1, parse: z.object({}) },
+            ],
+          }),
+        ]),
+      ),
+    ).toBe("revision-out-of-range");
   });
 
   it("parseStored throws InvalidEventPayloadError when the stored payload fails the latest schema", () => {
@@ -188,22 +191,13 @@ describe("defineEvents", () => {
       defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({ name: z.string() }) }),
     ]);
 
-    expect(() =>
-      registry.parseStored({
-        eventType: "widget.created",
-        eventRevision: 1,
-        payload: { name: 123 },
-        occurredAt: new Date(),
-      }),
-    ).toThrow(InvalidEventPayloadError);
+    expect(() => registry.parseStored(stored("widget.created", 1, { name: 123 }))).toThrow(InvalidEventPayloadError);
   });
 
   it("parseStored throws UnknownEventTypeError for a stored row of an unregistered type", () => {
     const registry = defineEvents([
       defineEvent({ eventType: "widget.created", latestRevision: 1, latest: z.object({}) }),
     ]);
-    expect(() =>
-      registry.parseStored({ eventType: "widget.deleted", eventRevision: 1, payload: {}, occurredAt: new Date() }),
-    ).toThrow(UnknownEventTypeError);
+    expect(() => registry.parseStored(stored("widget.deleted", 1, {}))).toThrow(UnknownEventTypeError);
   });
 });

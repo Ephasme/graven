@@ -5,10 +5,7 @@
  * demands `composite` projects, which the base tsconfig deliberately does not set.
  */
 
-const packages = [
-  "graven",
-  "graven-sql",
-];
+import { packages } from "./packages.js";
 
 async function run(cmd: string[], cwd: string): Promise<void> {
   const proc = Bun.spawn(cmd, { cwd, stdout: "inherit", stderr: "inherit" });
@@ -18,7 +15,7 @@ async function run(cmd: string[], cwd: string): Promise<void> {
   }
 }
 
-for (const name of packages) {
+for (const { name } of packages) {
   const dir = `${import.meta.dir}/../packages/${name}`;
   console.log(`\n=== building ${name} ===`);
 

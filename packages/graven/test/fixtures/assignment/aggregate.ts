@@ -8,7 +8,7 @@ import type { InsertableEventOf } from "../../../src/events.js";
 import type { Proposal } from "../../../src/decide.js";
 import { assignmentEvents } from "./events.js";
 
-export type AssignmentStatus = "pending" | "installed" | "removed" | "failed";
+type AssignmentStatus = "pending" | "installed" | "removed" | "failed";
 
 export interface AssignmentState {
   assignmentId: string;
@@ -107,7 +107,7 @@ export const assignment = defineAggregate({
   },
 });
 
-export type RequestAssignmentInput = {
+type RequestAssignmentInput = {
   readonly profileId: string;
   readonly udid: string;
   readonly sourceGroupId: string | null;

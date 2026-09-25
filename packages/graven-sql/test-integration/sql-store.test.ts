@@ -5,11 +5,13 @@ import {
   defineAggregate,
   defineEvent,
   defineProjection,
+  defineProjector,
   DuplicateEventIdError,
   GravenError,
   InvalidStoredRowError,
   ProjectionAggregateMismatchError,
   rebuild,
+  runProjector,
 } from "@les-sherpas/graven";
 import { createSqlEventStore, type GravenDatabase, type SqlEventStore } from "@les-sherpas/graven-sql";
 import { Kysely, MysqlDialect, PostgresDialect, sql } from "kysely";
@@ -168,7 +170,7 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
     expect((await store.readStream("s1")).map((r) => r.streamVersion)).toEqual([1, 2]);
   });
 
-  it("readGlobal orders by position, and readStreams handles an unknown id", async () => {
+  it("readGlobal orders by position", async () => {
     await store.append({
       streamId: "s1",
       aggregateType: "widget",
@@ -178,12 +180,9 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
     });
 
     expect((await store.readGlobal({ fromPosition: 0, limit: 100 })).map((e) => e.eventId)).toEqual(["e1", "e2"]);
-    const map = await store.readStreams(["s1", "unknown"]);
-    expect(map.get("s1")?.length).toBe(2);
-    expect(map.get("unknown")).toEqual([]);
   });
 
-  it("read filters: version range, aggregate type, stream ids by type, and an empty id list", async () => {
+  it("read filters: aggregate type and stream ids by type", async () => {
     await store.append({
       streamId: "w1",
       aggregateType: "widget",
@@ -199,13 +198,11 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
       metadata: { correlationId: "c2" },
     });
 
-    expect((await store.readStream("w1", { fromVersion: 2, toVersion: 2 })).map((e) => e.eventId)).toEqual(["e2"]);
     expect(
       (await store.readGlobal({ fromPosition: 0, limit: 10, aggregateType: "gadget" })).map((e) => e.eventId),
     ).toEqual(["e4"]);
     expect((await store.readGlobal({ fromPosition: 1, limit: 2 })).map((e) => e.eventId)).toEqual(["e2", "e3"]);
     expect(await store.readStreamIds("widget")).toEqual(["w1"]);
-    expect((await store.readStreams([])).size).toBe(0);
   });
 
   it("decide projects inline and rebuild restores the read table from the log", async () => {
@@ -295,6 +292,20 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
 
     expect((await store.readStream("s1")).length).toBe(1);
     expect(await scratchRow("partial")).toBeUndefined();
+  });
+
+  it("an append rolled back by a savepoint does not poison the next append's version check", async () => {
+    await store.transaction(async (tx) => {
+      await tx.append({ streamId: "s1", aggregateType: "widget", expected: { kind: "no-stream" }, events: [event("e1")], metadata: { correlationId: "c1" } });
+      await expect(
+        tx.savepoint(async () => {
+          await tx.append({ streamId: "s1", aggregateType: "widget", expected: { kind: "exact", version: 1 }, events: [event("e2")], metadata: { correlationId: "c2" } });
+          throw new Error("boom");
+        }),
+      ).rejects.toThrow("boom");
+      await tx.append({ streamId: "s1", aggregateType: "widget", expected: { kind: "exact", version: 1 }, events: [event("e3")], metadata: { correlationId: "c3" } });
+    });
+    expect((await store.readStream("s1")).map((e) => e.eventId)).toEqual(["e1", "e3"]);
   });
 
   it("a store built over a caller's Transaction joins it and rolls back with it", async () => {
@@ -416,6 +427,33 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
     }
     assert(caught instanceof InvalidStoredRowError);
     expect(caught.context.table).toBe("graven_events");
+  });
+
+  it("two concurrent runners of one projector apply each event exactly once", async () => {
+    await store.append({
+      streamId: "s1",
+      aggregateType: "widget",
+      expected: { kind: "no-stream" },
+      events: [event("e1"), event("e2"), event("e3")],
+      metadata: { correlationId: "c1" },
+    });
+
+    const rows: string[] = [];
+    const projector = defineProjector<Kysely<TestDatabase>>({
+      name: "collector",
+      apply: async ({ stored }) => {
+        rows.push(stored.eventId);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+    });
+
+    // No checkpoint row exists yet for "collector": both runners race its creation through
+    // `lockCheckpoint`, exercising SqlStore.transaction's deadlock retry.
+
+    const [a, b] = await Promise.all([runProjector(store, projector), runProjector(store, projector)]);
+    expect(rows).toEqual(["e1", "e2", "e3"]);
+    expect(a + b).toBe(3);
+    expect(await store.readCheckpoint("collector")).toBe(3);
   });
 });
 
