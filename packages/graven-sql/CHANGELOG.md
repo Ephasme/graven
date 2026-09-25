@@ -1,5 +1,12 @@
 # @les-sherpas/graven-sql
 
+## 0.3.2
+
+### Patch Changes
+
+- 9411547: Bound the internal row decoder's schema on `z.core.$ZodType`, matching `@les-sherpas/graven`'s event schemas.
+- @les-sherpas/graven@0.3.2
+
 ## 0.3.1
 
 ### Patch Changes
