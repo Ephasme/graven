@@ -15,5 +15,6 @@ Breaking changes:
 - `DecideOptions.projections` renamed to `runInlineProjections`.
 - `ProjectorContext.event` renamed to `.stored`.
 - `graven-sql` no longer exports `GravenTable`.
+- `InMemoryWriter`'s constructor now takes `() => TableMap<T>` instead of a `TableMap<T>`; a direct caller (a custom store, a test harness) must pass a thunk.
 
 No compatibility aliases ship for any of the above.

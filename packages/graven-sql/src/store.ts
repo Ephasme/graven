@@ -46,6 +46,27 @@ type Shared<DB> = {
   readonly onProjectionError: ProjectionErrorHandler;
 };
 
+const TRANSACTION_RETRY_ATTEMPTS = 3;
+const TRANSACTION_RETRY_DELAY_MS = 10;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** MySQL `ER_LOCK_DEADLOCK`/`ER_LOCK_WAIT_TIMEOUT`; Postgres `deadlock_detected`/`serialization_failure`.
+ * Both drivers abort the whole transaction on either, so the caller must retry `fn` in full, not
+ * just the statement that surfaced it — e.g. two never-locked `graven_checkpoints` rows racing
+ * `insertIfAbsent` gap-lock each other's insert under MariaDB REPEATABLE READ. */
+function isTransientTransactionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = "code" in error ? error.code : undefined;
+  const errno = "errno" in error ? error.errno : undefined;
+  return (
+    (typeof code === "string" && (code === "40P01" || code === "40001")) ||
+    (typeof errno === "number" && (errno === 1213 || errno === 1205))
+  );
+}
+
 abstract class SqlReader<DB> {
   readonly writer: Kysely<DB>;
   readonly projections: readonly Projection<Kysely<DB>>[];
@@ -134,7 +155,14 @@ class SqlStore<DB> extends SqlReader<DB> implements SqlEventStore<DB> {
 
   async transaction<T>(fn: (tx: EventStoreTransaction<Kysely<DB>>) => Promise<T>): Promise<T> {
     if (this.db.isTransaction) return fn(new SqlTransaction(this.db, this.shared));
-    return this.db.transaction().execute((trx) => fn(new SqlTransaction(trx, this.shared)));
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.db.transaction().execute((trx) => fn(new SqlTransaction(trx, this.shared)));
+      } catch (error) {
+        if (!isTransientTransactionError(error) || attempt >= TRANSACTION_RETRY_ATTEMPTS) throw error;
+        await sleep(TRANSACTION_RETRY_DELAY_MS * attempt);
+      }
+    }
   }
 
   async migrate(): Promise<void> {

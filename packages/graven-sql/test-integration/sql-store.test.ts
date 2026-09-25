@@ -447,10 +447,8 @@ describe.each(cases)("SqlEventStore ($name)", ({ db, truncate }) => {
       },
     });
 
-    // Seed the checkpoint row outside the race: two transactions racing `insertIfAbsent` on the
-    // same not-yet-existing row can gap-lock each other's insert under MariaDB REPEATABLE READ,
-    // a driver deadlock unrelated to the compare-and-swap this test exercises.
-    await store.writeCheckpoint("collector", 0);
+    // No checkpoint row exists yet for "collector": both runners race its creation through
+    // `lockCheckpoint`, exercising SqlStore.transaction's deadlock retry.
 
     const [a, b] = await Promise.all([runProjector(store, projector), runProjector(store, projector)]);
     expect(rows).toEqual(["e1", "e2", "e3"]);
