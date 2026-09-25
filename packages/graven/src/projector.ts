@@ -5,7 +5,7 @@ import type { EventStore } from "./store.js";
 import type { BaseEvent, StoredEvent } from "./types.js";
 
 export type ProjectorContext<E extends BaseEvent, W> = {
-  readonly event: StoredEvent<E>;
+  readonly stored: StoredEvent<E>;
   readonly writer: W;
 };
 
@@ -42,19 +42,17 @@ export function defineProjector<S, C extends EventFamilies, W>(
       name,
       aggregateType: aggregate.type,
       // The declared payload is the latest, upcast shape; decode the row before it reaches `apply`.
-      apply: async ({ event, writer }) => {
-        const decoded = aggregate.events.parseStored({
-          eventType: event.event.eventType,
-          eventRevision: event.eventRevision,
-          payload: event.event.payload,
-          occurredAt: event.event.occurredAt,
-        });
-        await apply({ writer, event: { ...event, event: decoded } });
+      apply: async ({ stored, writer }) => {
+        const event = aggregate.events.parseStored(stored);
+        await apply({ writer, stored: { ...stored, event } });
       },
     };
   }
   return { name: config.name, aggregateType: undefined, apply: config.apply };
 }
+
+const DEFAULT_BATCH_SIZE = 100;
+const DEFAULT_INTERVAL_MS = 1000;
 
 /** One pass. Returns how many events it consumed. */
 export async function runProjector<W>(
@@ -62,71 +60,40 @@ export async function runProjector<W>(
   projector: Projector<W>,
   options?: { readonly batchSize?: number },
 ): Promise<number> {
-  const batchSize = options?.batchSize ?? 100;
+  const batchSize = options?.batchSize ?? DEFAULT_BATCH_SIZE;
   let consumed = 0;
 
   for (;;) {
-    const checkpoint = await store.readCheckpoint(projector.name);
-    const batch = await store.readGlobal({
-      fromPosition: checkpoint,
-      limit: batchSize,
-      aggregateType: projector.aggregateType,
-    });
-
-    for (const event of batch) {
-      await store.transaction(async (tx) => {
-        await projector.apply({ event, writer: tx.writer });
-        await tx.writeCheckpoint(projector.name, event.globalPosition);
+    let checkpoint = await store.readCheckpoint(projector.name);
+    const batch = await store.readGlobal({ fromPosition: checkpoint, limit: batchSize, aggregateType: projector.aggregateType });
+    let raced = false;
+    for (const stored of batch) {
+      const applied = await store.transaction(async (tx) => {
+        // Another runner of this projector moved the checkpoint since this batch was read.
+        if ((await tx.lockCheckpoint(projector.name)) !== checkpoint) return false;
+        await projector.apply({ stored, writer: tx.writer });
+        await tx.writeCheckpoint(projector.name, stored.globalPosition);
+        return true;
       });
+      if (!applied) {
+        raced = true;
+        break;
+      }
+      checkpoint = stored.globalPosition;
       consumed++;
     }
-
-    if (batch.length < batchSize) break;
+    if (!raced && batch.length < batchSize) break;
   }
 
   return consumed;
 }
 
-export function startProjectors<W>(
-  store: EventStore<W>,
-  projectors: readonly Projector<W>[],
-  options?: {
-    readonly intervalMs?: number;
-    readonly batchSize?: number;
-    readonly onError?: (error: unknown, projector: string) => void;
-  },
-): {
-  readonly wake: () => void;
-  readonly stop: () => Promise<void>;
-  readonly status: () => Promise<readonly { readonly name: string; readonly position: number; readonly lag: number }[]>;
-} {
-  const seen = new Set<string>();
-  for (const projector of projectors) {
-    if (seen.has(projector.name)) {
-      throw new DuplicateProjectorError(projector.name);
-    }
-    seen.add(projector.name);
-  }
-
-  const intervalMs = options?.intervalMs ?? 1000;
-  const batchSize = options?.batchSize ?? 100;
-  const onError = options?.onError ?? ((error, name) => console.error(`graven: projector ${name} failed`, error));
-
+function createScheduler(runPass: () => Promise<void>, intervalMs: number): { readonly wake: () => void; readonly stop: () => Promise<void> } {
   let stopped = false;
   let wakeRequested = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let currentPass: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
-
-  async function runPass(): Promise<void> {
-    for (const projector of projectors) {
-      try {
-        await runProjector(store, projector, { batchSize });
-      } catch (error) {
-        onError(error, projector.name);
-      }
-    }
-  }
 
   function scheduleNext(): void {
     if (stopped) return;
@@ -166,15 +133,57 @@ export function startProjectors<W>(
       stopPromise = (currentPass ?? Promise.resolve()).then(() => undefined);
       return stopPromise;
     },
+  };
+}
+
+export function startProjectors<W>(
+  store: EventStore<W>,
+  projectors: readonly Projector<W>[],
+  options?: {
+    readonly intervalMs?: number;
+    readonly batchSize?: number;
+    readonly onError?: (error: unknown, projector: string) => void;
+  },
+): {
+  readonly wake: () => void;
+  readonly stop: () => Promise<void>;
+  readonly status: () => Promise<readonly { readonly name: string; readonly position: number; readonly lag: number }[]>;
+} {
+  const seen = new Set<string>();
+  for (const projector of projectors) {
+    if (seen.has(projector.name)) {
+      throw new DuplicateProjectorError(projector.name);
+    }
+    seen.add(projector.name);
+  }
+
+  const batchSize = options?.batchSize ?? DEFAULT_BATCH_SIZE;
+  const onError = options?.onError ?? ((error, name) => console.error(`graven: projector ${name} failed`, error));
+
+  async function runPass(): Promise<void> {
+    for (const projector of projectors) {
+      try {
+        await runProjector(store, projector, { batchSize });
+      } catch (error) {
+        onError(error, projector.name);
+      }
+    }
+  }
+
+  const scheduler = createScheduler(runPass, options?.intervalMs ?? DEFAULT_INTERVAL_MS);
+
+  return {
+    wake: scheduler.wake,
+    stop: scheduler.stop,
 
     async status() {
-      const position = await store.currentPosition();
       const rows = [];
       for (const projector of projectors) {
-        const checkpoint = await store.readCheckpoint(projector.name);
-        rows.push({ name: projector.name, position: checkpoint, lag: position - checkpoint });
+        rows.push({ name: projector.name, checkpoint: await store.readCheckpoint(projector.name) });
       }
-      return rows;
+      // Position is read last: it only grows, so lag cannot go negative.
+      const position = await store.currentPosition();
+      return rows.map(({ name, checkpoint }) => ({ name, position: checkpoint, lag: position - checkpoint }));
     },
   };
 }

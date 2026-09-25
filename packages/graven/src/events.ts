@@ -1,7 +1,7 @@
 import type { z } from "zod";
-import { DuplicateEventFamilyError, InvalidEventPayloadError, UnknownEventRevisionError, UnknownEventTypeError } from "./errors.js";
+import { InvalidEventFamilyError, InvalidEventPayloadError, UnknownEventRevisionError, UnknownEventTypeError } from "./errors.js";
 import type { JsonValue } from "./json.js";
-import type { TimedEvent } from "./types.js";
+import type { StoredEvent, TimedEvent } from "./types.js";
 
 export type Upcaster<P> = { readonly revision: number; readonly parse: z.ZodType<P, unknown> };
 
@@ -54,25 +54,17 @@ export type ParsedInsertable<C extends EventFamilies> = {
   readonly event: EventOf<C>;
 };
 
-export type ParsedStoredRow = {
-  readonly eventType: string;
-  readonly eventRevision: number;
-  readonly payload: JsonValue;
-  readonly occurredAt: Date;
-};
-
 export interface EventRegistry<C extends EventFamilies> {
-  readonly types: readonly EventTypeOf<C>[];
-  latestRevision(eventType: EventTypeOf<C>): number;
   parseInsertable(input: InsertableEventOf<C>): ParsedInsertable<C>;
-  parseStored(row: ParsedStoredRow): TimedEvent<EventOf<C>>;
+  /** Decodes a stored row; an older revision is upcast to the latest payload shape. */
+  parseStored(stored: StoredEvent): TimedEvent<EventOf<C>>;
 }
 
 function validateFamilies(families: EventFamilies): void {
   const seen = new Set<string>();
   for (const family of families) {
     if (seen.has(family.eventType)) {
-      throw new DuplicateEventFamilyError(family.eventType, family.latestRevision);
+      throw new InvalidEventFamilyError(family.eventType, family.latestRevision, "duplicate-type");
     }
     seen.add(family.eventType);
 
@@ -80,20 +72,18 @@ function validateFamilies(families: EventFamilies): void {
     const revisionsSeen = new Set<number>();
     for (const entry of previous) {
       if (revisionsSeen.has(entry.revision)) {
-        throw new DuplicateEventFamilyError(family.eventType, entry.revision);
+        throw new InvalidEventFamilyError(family.eventType, entry.revision, "duplicate-revision");
       }
       revisionsSeen.add(entry.revision);
 
       if (entry.revision < 1 || entry.revision >= family.latestRevision) {
-        throw new DuplicateEventFamilyError(family.eventType, entry.revision);
+        throw new InvalidEventFamilyError(family.eventType, entry.revision, "revision-out-of-range");
       }
     }
 
-    if (family.latestRevision > 1) {
-      for (let revision = 1; revision < family.latestRevision; revision++) {
-        if (!revisionsSeen.has(revision)) {
-          throw new DuplicateEventFamilyError(family.eventType, revision);
-        }
+    for (let revision = 1; revision < family.latestRevision; revision++) {
+      if (!revisionsSeen.has(revision)) {
+        throw new InvalidEventFamilyError(family.eventType, revision, "missing-upcaster");
       }
     }
   }
@@ -148,49 +138,43 @@ export function defineEvents<const C extends EventFamilies>(families: C): EventR
     return { eventRevision: family.latestRevision, event };
   }
 
-  function decodeStored<K extends EventTypeOf<C>>(eventType: K, row: ParsedStoredRow): TimedEvent<EventOf<C, K>> {
+  function decodeStored<K extends EventTypeOf<C>>(eventType: K, stored: StoredEvent): TimedEvent<EventOf<C, K>> {
     const family = familyFor(eventType);
 
-    if (row.eventRevision === family.latestRevision) {
+    if (stored.eventRevision === family.latestRevision) {
       const payload = parsePayload<FamilyOf<C, K>["latest"]>(
         family.latest,
-        row.payload,
+        stored.event.payload,
         family.eventType,
         family.latestRevision,
       );
-      return { eventType, payload, occurredAt: row.occurredAt };
+      return { eventType, payload, occurredAt: stored.event.occurredAt };
     }
 
     const previous: NonNullable<FamilyOf<C, K>["previous"]> = family.previous ?? [];
-    const entry = previous.find((candidate) => candidate.revision === row.eventRevision);
+    const entry = previous.find((candidate) => candidate.revision === stored.eventRevision);
     if (!entry) {
-      throw new UnknownEventRevisionError(family.eventType, row.eventRevision);
+      throw new UnknownEventRevisionError(family.eventType, stored.eventRevision);
     }
     const payload = parsePayload<UpcasterSchema<FamilyOf<C, K>>>(
       entry.parse,
-      row.payload,
+      stored.event.payload,
       family.eventType,
-      row.eventRevision,
+      stored.eventRevision,
     );
-    return { eventType, payload, occurredAt: row.occurredAt };
+    return { eventType, payload, occurredAt: stored.event.occurredAt };
   }
 
   return {
-    types: families.map((family) => family.eventType),
-
-    latestRevision(eventType) {
-      return familyFor(eventType).latestRevision;
-    },
-
     parseInsertable(input) {
       return decodeLatest(input);
     },
 
-    parseStored(row) {
-      if (!isEventType(row.eventType)) {
-        throw new UnknownEventTypeError(row.eventType);
+    parseStored(stored) {
+      if (!isEventType(stored.event.eventType)) {
+        throw new UnknownEventTypeError(stored.event.eventType);
       }
-      return decodeStored(row.eventType, row);
+      return decodeStored(stored.event.eventType, stored);
     },
   };
 }

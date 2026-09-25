@@ -49,12 +49,14 @@ export class InvalidEventPayloadError extends GravenError {
   }
 }
 
-export class DuplicateEventFamilyError extends GravenError {
-  readonly code = "GRAVEN_DUPLICATE_EVENT_FAMILY";
-  declare readonly context: { readonly eventType: string; readonly revision: number };
+export type EventFamilyDefect = "duplicate-type" | "duplicate-revision" | "revision-out-of-range" | "missing-upcaster";
 
-  constructor(eventType: string, revision: number) {
-    super(`duplicate event family: ${eventType}`, { eventType, revision });
+export class InvalidEventFamilyError extends GravenError {
+  readonly code = "GRAVEN_INVALID_EVENT_FAMILY";
+  declare readonly context: { readonly eventType: string; readonly revision: number; readonly defect: EventFamilyDefect };
+
+  constructor(eventType: string, revision: number, defect: EventFamilyDefect) {
+    super(`invalid event family ${eventType}: ${defect} (revision ${revision})`, { eventType, revision, defect });
   }
 }
 

@@ -3,7 +3,8 @@ import { defineAggregate } from "./aggregate.js";
 import { decide } from "./decide.js";
 import { defineEvent } from "./events.js";
 import { ProjectionAggregateMismatchError, ProjectionNotRebuildableError } from "./errors.js";
-import { createInMemoryStore, type InMemoryWriter } from "./memory.js";
+import { createInMemoryStore } from "./memory.js";
+import type { InMemoryWriter } from "./memory-tables.js";
 import { defineProjection, rebuild } from "./projection.js";
 import { z } from "zod";
 

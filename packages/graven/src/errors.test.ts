@@ -2,10 +2,10 @@ import { assert, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   ConcurrentModificationError,
-  DuplicateEventFamilyError,
   DuplicateEventIdError,
   DuplicateProjectorError,
   GravenError,
+  InvalidEventFamilyError,
   InvalidEventPayloadError,
   ProjectionNotRebuildableError,
   StaleStreamVersionError,
@@ -40,10 +40,10 @@ describe("GravenError subclasses", () => {
     expect(error.context.issues).toBe(issues);
   });
 
-  it("DuplicateEventFamilyError carries eventType and revision context", () => {
-    const error = new DuplicateEventFamilyError("widget.created", 2);
-    expect(error.code).toBe("GRAVEN_DUPLICATE_EVENT_FAMILY");
-    expect(error.context).toEqual({ eventType: "widget.created", revision: 2 });
+  it("InvalidEventFamilyError carries eventType, revision, and defect context", () => {
+    const error = new InvalidEventFamilyError("widget.created", 2, "missing-upcaster");
+    expect(error.code).toBe("GRAVEN_INVALID_EVENT_FAMILY");
+    expect(error.context).toEqual({ eventType: "widget.created", revision: 2, defect: "missing-upcaster" });
   });
 
   it("DuplicateProjectorError carries the projector name", () => {

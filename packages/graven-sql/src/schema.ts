@@ -1,14 +1,8 @@
 import {
-  DummyDriver,
   Kysely,
-  MysqlAdapter,
-  MysqlIntrospector,
-  MysqlQueryCompiler,
   OperationNodeTransformer,
-  PostgresAdapter,
-  PostgresIntrospector,
-  PostgresQueryCompiler,
   type ColumnType,
+  type Dialect,
   type TableNode,
 } from "kysely";
 import type { TableNames } from "./tables.js";
@@ -39,6 +33,13 @@ export type GravenDatabase = {
 };
 
 export type GravenTable = keyof GravenDatabase;
+
+/** Primary key of the single `graven_positions` row that holds the global position counter. */
+export const POSITIONS_ROW_ID = 1;
+
+export function streamVersionConstraint(tables: TableNames): string {
+  return `${tables.events}_stream_version_key`;
+}
 
 const GRAVEN_TABLES = [
   "graven_events",
@@ -78,19 +79,11 @@ class RenameTables extends OperationNodeTransformer {
 /** A compile-only `Kysely<GravenDatabase>` over `kind`, renaming logical table names to `names`
  * on every compiled query. It never executes; execution runs through the caller's own executor
  * via `execute`/`selectRows` in `store.ts`, so the caller's plugins and transaction still apply. */
-export function createQueryBuilder(
-  kind: "postgres" | "mysql",
-  names: Readonly<Record<GravenTable, string>>,
-): Kysely<GravenDatabase> {
+export function createQueryBuilder(dialect: Dialect, names: Readonly<Record<GravenTable, string>>): Kysely<GravenDatabase> {
   const transformer = new RenameTables(names);
 
   return new Kysely<GravenDatabase>({
-    dialect: {
-      createAdapter: () => (kind === "postgres" ? new PostgresAdapter() : new MysqlAdapter()),
-      createDriver: () => new DummyDriver(),
-      createIntrospector: (db) => (kind === "postgres" ? new PostgresIntrospector(db) : new MysqlIntrospector(db)),
-      createQueryCompiler: () => (kind === "postgres" ? new PostgresQueryCompiler() : new MysqlQueryCompiler()),
-    },
+    dialect,
     plugins: [
       {
         transformQuery: (args) => transformer.transformNode(args.node, args.queryId),

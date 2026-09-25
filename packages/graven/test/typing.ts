@@ -80,4 +80,10 @@ export const misuses = [
   },
   // @ts-expect-error no table declared: createInMemoryStore() infers an empty table map
   () => createInMemoryStore().writer.table("t"),
+  // @ts-expect-error savepoint exists only on the handle `transaction` passes
+  // oxlint-disable-next-line typescript/no-unsafe-return, typescript/no-unsafe-call
+  () => createInMemoryStore().savepoint(async () => {}),
+  // @ts-expect-error lockStream exists only on the handle `transaction` passes
+  // oxlint-disable-next-line typescript/no-unsafe-return, typescript/no-unsafe-call
+  () => createInMemoryStore().lockStream("s1"),
 ];

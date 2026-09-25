@@ -5,6 +5,8 @@ export * from "./events.js";
 export * from "./aggregate.js";
 export * from "./projection.js";
 export * from "./store.js";
+export * from "./adapter.js";
 export * from "./memory.js";
+export { InMemoryWriter } from "./memory-tables.js";
 export * from "./decide.js";
 export * from "./projector.js";
