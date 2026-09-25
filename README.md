@@ -308,6 +308,8 @@ If anything throws, the whole rebuild rolls back and the read model is left as i
 
 A **projector** (`defineProjector`) reads the whole log in global order, optionally only for one aggregate type, starting from the last position it saved (its checkpoint). Each event is applied and the checkpoint saved in the same transaction, so each committed event is applied exactly once. `apply` does not need to be idempotent as long as it writes only through `writer`; anything it sends elsewhere, such as an email, can be repeated if the transaction fails afterwards.
 
+Several runners of one projector, in one process or many, can run at once. Each locks the checkpoint before applying an event; if another runner moved it since the batch was read, it drops the batch and reads again from the new checkpoint.
+
 `startProjectors(store, projectors)` runs them on a timer and returns three controls:
 
 - **`wake()`**: run a pass now.
@@ -322,8 +324,8 @@ An event whose `apply` keeps failing blocks that projector, and nothing past it 
 - **Concurrency:** two `decide` calls on one stream run one after the other, never interleaved, because of the row lock on the stream.
 - **Global positions:** they have no gaps and follow commit order. A single counter row, locked until commit, hands them out. An identity column would leave holes on rollback, and a catch-up projector would stall on such a hole forever.
 - **Atomicity:** the events of one decision, and the inline projection writes that follow them, commit together or not at all.
-- **No deadlock:** `decide` takes its locks in the order projections (shared), then stream, then position counter. `rebuild` takes only the projection locks, in exclusive mode. With the order fixed, the two can't deadlock.
-- **Joining a transaction:** a store built over a caller's Kysely `Transaction` joins it. `decide` then commits or rolls back with the caller's own writes.
+- **No deadlock:** `decide` takes its locks in the order projections (shared), then stream, then position counter. `rebuild` takes only the projection locks, in exclusive mode. `runProjector` takes only its checkpoint row. With the order fixed, they can't deadlock each other. A deadlock or serialization failure the database raises anyway (for example MariaDB gap locks on a projector's first checkpoint row) makes the SQL store retry the whole transaction.
+- **Joining a transaction:** a store built over a caller's Kysely `Transaction` joins it. `decide` then commits or rolls back with the caller's own writes. The store never retries a joined transaction on a deadlock; the caller owns that retry.
 - **Time zones:** timestamps round-trip exactly, including milliseconds, whatever time zone the driver or pool is configured with.
 
 ## SQL schema
@@ -335,7 +337,7 @@ An event whose `apply` keeps failing blocks that projector, and nothing past it 
 | `graven_events` | The log: `global_position`, `stream_id`, `stream_version`, `aggregate_type`, `event_id`, `event_type`, `event_revision`, `payload`, `metadata`, `occurred_at`, `recorded_at`. `(stream_id, stream_version)` and `event_id` are unique. |
 | `graven_streams` | One row per stream holding its current version; this is the row `decide` locks. |
 | `graven_positions` | The single counter row that hands out global positions. |
-| `graven_checkpoints` | One row per catch-up projector: the last position it applied. |
+| `graven_checkpoints` | One row per catch-up projector: the last position it applied. Each runner locks it while applying an event. |
 | `graven_locks` | One row per projection, locked shared by `decide` and exclusively by `rebuild`. |
 
 On MySQL/MariaDB, keys are `varchar(255)`, JSON columns are `json`, and timestamps are `datetime(3)` stored in UTC. On Postgres they are `text`, `jsonb` and `timestamptz`.
@@ -354,7 +356,7 @@ Every export has a TypeScript declaration and a doc comment; this section is a m
 | `defineProjection`, `rebuild` | Inline read model; regenerate it from the log. |
 | `defineProjector`, `runProjector`, `startProjectors` | Catch-up projector; one pass; a scheduler. |
 | `createInMemoryStore` | A store with no database, for tests. |
-| `EventStore` | The store interface, for writing another adapter. |
+| `EventStore`, `EventStoreTransaction` | The store interface, and the handle its `transaction` passes to the callback: the only place the locks and savepoints exist. Implement both to write another adapter. |
 
 Every error extends `GravenError` and has a stable `code` and a `context` object:
 

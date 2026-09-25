@@ -8,8 +8,9 @@
 |------|---------|
 | Test file | `bunx --bun vitest run --project unit path/to/file.test.ts` |
 | Integration test file | `bunx --bun vitest run --project integration path/to/file.test.ts` |
+| Lint file | `bunx oxlint path/to/file.ts` |
 | Typecheck (also checks `packages/graven/test/typing.ts`) | `bun run typecheck` |
-| Typecheck + unit tests | `bun run check` |
+| Typecheck + lint + unit tests | `bun run check` |
 | Start / wipe test databases | `bun run db:up` / `bun run db:down` |
 | Build + verify bundles | `bun run build` |
 | Record a release note | `bun run changeset` |
@@ -33,8 +34,7 @@
 
 ## Adding or Renaming a Package
 Update the package list in all of:
-- `scripts/build.ts` and `scripts/publish.ts` (dependency order)
-- `scripts/verify-packaging.ts` (`siblingDependencies`: runtime imports only, not `import type`)
+- `scripts/packages.ts` (dependency order; `siblingDependencies`: runtime imports only, not `import type`)
 - `tsconfig.json` `references`
 - `vitest.config.ts` `alias`
 - `.changeset/config.json` `fixed`
@@ -44,6 +44,7 @@ Update the package list in all of:
 - Cross-package imports use `@les-sherpas/<name>`, never relative paths into a sibling.
 - Sibling deps are `"workspace:*"` in `dependencies`; `kysely` and `zod` are `peerDependencies`.
 - `scripts/build.ts` MUST keep `--external '@les-sherpas/*'` on both bundles; without it siblings get inlined and `instanceof` breaks across packages.
+- Postgres/MySQL branching lives only in `packages/graven-sql/src/dialect.ts`; other `graven-sql` files stay dialect-agnostic.
 
 ## Release
 - Never bump `version` by hand; add a changeset (`bun run changeset`). Both packages share one version (`fixed`).
