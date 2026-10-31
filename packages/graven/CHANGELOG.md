@@ -1,5 +1,11 @@
 # @les-sherpas/graven
 
+## 0.4.0
+
+### Minor Changes
+
+- bdede16: Republished under @ephasme, MIT.
+
 ## 0.3.2
 
 No changes in this release.
