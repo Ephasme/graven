@@ -1,7 +1,7 @@
 import {
   DuplicateEventIdError,
   StreamVersionConflictError,
-} from "@les-sherpas/graven";
+} from "@ephasme/graven";
 import type {
   AppendRequest,
   AppendResult,
@@ -11,8 +11,8 @@ import type {
   Projection,
   ProjectionErrorHandler,
   StoredEvent,
-} from "@les-sherpas/graven";
-import { assertExpectedVersion, buildStoredEvents, defaultProjectionErrorHandler } from "@les-sherpas/graven";
+} from "@ephasme/graven";
+import { assertExpectedVersion, buildStoredEvents, defaultProjectionErrorHandler } from "@ephasme/graven";
 import dbErrors from "db-errors";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { z } from "zod";

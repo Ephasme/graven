@@ -12,8 +12,8 @@ import {
   ProjectionAggregateMismatchError,
   rebuild,
   runProjector,
-} from "@les-sherpas/graven";
-import { createSqlEventStore, type GravenDatabase, type SqlEventStore } from "@les-sherpas/graven-sql";
+} from "@ephasme/graven";
+import { createSqlEventStore, type GravenDatabase, type SqlEventStore } from "@ephasme/graven-sql";
 import { Kysely, MysqlDialect, PostgresDialect, sql } from "kysely";
 import mysql2 from "mysql2";
 import pg from "pg";

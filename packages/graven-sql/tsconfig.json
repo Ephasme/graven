@@ -2,8 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "paths": {
-      "@les-sherpas/graven": ["../graven/src/index.ts"],
-      "@les-sherpas/graven-sql": ["./src/index.ts"]
+      "@ephasme/graven": ["../graven/src/index.ts"],
+      "@ephasme/graven-sql": ["./src/index.ts"]
     }
   },
   "include": ["src", "test-integration"]

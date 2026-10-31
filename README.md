@@ -8,8 +8,8 @@ It is split into two packages:
 
 | Package | Contents |
 |---|---|
-| [`@les-sherpas/graven`](packages/graven) | Events, aggregates, `decide`, projections, catch-up projectors, an in-memory store. No database. |
-| [`@les-sherpas/graven-sql`](packages/graven-sql) | The store over a [Kysely](https://kysely.dev) instance, on Postgres or MySQL/MariaDB. |
+| [`@ephasme/graven`](packages/graven) | Events, aggregates, `decide`, projections, catch-up projectors, an in-memory store. No database. |
+| [`@ephasme/graven-sql`](packages/graven-sql) | The store over a [Kysely](https://kysely.dev) instance, on Postgres or MySQL/MariaDB. |
 
 ## Table of Contents
 
@@ -25,15 +25,10 @@ It is split into two packages:
 
 ## Install
 
-The packages are published to GitHub Packages under `@les-sherpas`. Point the scope at it in your `.npmrc`, with a token that has `read:packages`:
-
-```ini
-@les-sherpas:registry=https://npm.pkg.github.com/
-//npm.pkg.github.com/:_authToken=${NPM_AUTH_TOKEN}
-```
+The packages are published to npm under `@ephasme`:
 
 ```sh
-bun add @les-sherpas/graven @les-sherpas/graven-sql zod kysely
+bun add @ephasme/graven @ephasme/graven-sql zod kysely
 # plus the driver for your database
 bun add pg        # Postgres
 bun add mysql2    # MySQL / MariaDB
@@ -52,8 +47,8 @@ A bank account that can be opened, credited and debited, and that refuses to go 
 
 ```ts
 import { z } from "zod";
-import { decide, defineAggregate, defineEvent, defineProjection } from "@les-sherpas/graven";
-import { createSqlEventStore, type GravenDatabase } from "@les-sherpas/graven-sql";
+import { decide, defineAggregate, defineEvent, defineProjection } from "@ephasme/graven";
+import { createSqlEventStore, type GravenDatabase } from "@ephasme/graven-sql";
 import { Kysely, PostgresDialect } from "kysely";
 import pg from "pg";
 
@@ -346,7 +341,7 @@ On MySQL/MariaDB, keys are `varchar(255)`, JSON columns are `json`, and timestam
 
 Every export has a TypeScript declaration and a doc comment; this section is a map of them.
 
-**`@les-sherpas/graven`**
+**`@ephasme/graven`**
 
 | Export | Purpose |
 |---|---|
@@ -373,7 +368,7 @@ Every error extends `GravenError` and has a stable `code` and a `context` object
 | `InvalidStoredRowError` | A store found a row (SQL) whose columns don't decode to a valid `StoredEvent`. `context.table` names the table. |
 | `DuplicateProjectorError` | Two projectors share a name. |
 
-**`@les-sherpas/graven-sql`**
+**`@ephasme/graven-sql`**
 
 | Export | Purpose |
 |---|---|
@@ -383,7 +378,7 @@ Every error extends `GravenError` and has a stable `code` and a `context` object
 
 ## Contributing
 
-Questions and bugs go in [GitHub issues](https://github.com/Les-Sherpas/graven/issues). Pull requests are welcome.
+Questions and bugs go in [GitHub issues](https://github.com/Ephasme/graven/issues). Pull requests are welcome.
 
 ```sh
 bun install
@@ -399,4 +394,4 @@ A change that should be released comes with a changeset. Run `bun changeset`, pi
 
 ## License
 
-UNLICENSED. Proprietary to Les Sherpas; not licensed for use outside the organization.
+MIT. See [LICENSE](LICENSE).

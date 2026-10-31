@@ -21,7 +21,7 @@
       },
     },
     "packages/graven": {
-      "name": "@les-sherpas/graven",
+      "name": "@ephasme/graven",
       "version": "0.3.2",
       "dependencies": {
         "@esfx/async-readerwriterlock": "^1.0.0",
@@ -32,11 +32,11 @@
       },
     },
     "packages/graven-sql": {
-      "name": "@les-sherpas/graven-sql",
+      "name": "@ephasme/graven-sql",
       "version": "0.3.2",
       "dependencies": {
         "@date-fns/utc": "^2.1.1",
-        "@les-sherpas/graven": "workspace:*",
+        "@ephasme/graven": "workspace:*",
         "date-fns": "^4.4.0",
         "db-errors": "^0.2.3",
       },
@@ -93,6 +93,10 @@
 
     "@date-fns/utc": ["@date-fns/utc@2.1.1", "", {}, "sha512-SlJDfG6RPeEX8wEVv6ZB3kak4MmbtyiI2qX/5zuKdordbrhB/iaJ58GVMZgJ6P1sJaM1gMgENFYYeg1JWrCFrA=="],
 
+    "@ephasme/graven": ["@ephasme/graven@workspace:packages/graven"],
+
+    "@ephasme/graven-sql": ["@ephasme/graven-sql@workspace:packages/graven-sql"],
+
     "@esfx/async-lockable": ["@esfx/async-lockable@1.0.0", "", { "dependencies": { "@esfx/cancelable": "^1.0.0", "@esfx/disposable": "^1.0.0" } }, "sha512-MQoJKY9ityrO3W0DImrZn7jUJZ5mQBXUWsMH+baHz0YwdGXF36i1KPuxb5v1NG0gZkER3Sxr4jXQKeGDQNX6Xw=="],
 
     "@esfx/async-readerwriterlock": ["@esfx/async-readerwriterlock@1.0.0", "", { "dependencies": { "@esfx/async-lockable": "^1.0.0", "@esfx/async-waitqueue": "^1.0.0", "@esfx/cancelable": "^1.0.0", "@esfx/disposable": "^1.0.0" } }, "sha512-YFT9lYUfBMbXB7e7NT5iyatQXmOexuAXGy9MeonmvZBxPZyBPT4rWOyNkloeZRDC73ygGQL4P4nX31/LVTCjkA=="],
@@ -108,10 +112,6 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.6.0", "", {}, "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
-
-    "@les-sherpas/graven": ["@les-sherpas/graven@workspace:packages/graven"],
-
-    "@les-sherpas/graven-sql": ["@les-sherpas/graven-sql@workspace:packages/graven-sql"],
 
     "@manypkg/find-root": ["@manypkg/find-root@3.1.0", "", { "dependencies": { "@manypkg/tools": "^2.1.0" } }, "sha512-BcSqCyKhBVZ5YkSzOiheMCV41kqAFptW6xGqYSTjkVTl9XQpr+pqHhwgGCOHQtjDCv7Is6EFyA14Sm5GVbVABA=="],
 
