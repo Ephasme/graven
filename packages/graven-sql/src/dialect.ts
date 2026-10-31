@@ -1,5 +1,5 @@
-import { eventMetadataSchema, jsonValueSchema } from "@les-sherpas/graven";
-import type { EventMetadata, JsonValue, StoredEvent } from "@les-sherpas/graven";
+import { eventMetadataSchema, jsonValueSchema } from "@ephasme/graven";
+import type { EventMetadata, JsonValue, StoredEvent } from "@ephasme/graven";
 import { utc } from "@date-fns/utc";
 import { format, parseISO } from "date-fns";
 import {

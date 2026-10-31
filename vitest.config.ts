@@ -1,8 +1,8 @@
 import { defineConfig } from "vitest/config";
 
 const alias = {
-  "@les-sherpas/graven": new URL("packages/graven/src/index.ts", import.meta.url).pathname,
-  "@les-sherpas/graven-sql": new URL("packages/graven-sql/src/index.ts", import.meta.url).pathname,
+  "@ephasme/graven": new URL("packages/graven/src/index.ts", import.meta.url).pathname,
+  "@ephasme/graven-sql": new URL("packages/graven-sql/src/index.ts", import.meta.url).pathname,
 };
 
 export default defineConfig({

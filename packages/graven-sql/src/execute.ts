@@ -1,4 +1,4 @@
-import { InvalidStoredRowError } from "@les-sherpas/graven";
+import { InvalidStoredRowError } from "@ephasme/graven";
 import { createQueryId, type Compilable, type Kysely, type QueryResult, type RootOperationNode } from "kysely";
 import { z } from "zod";
 import type { GravenTable } from "./schema.js";

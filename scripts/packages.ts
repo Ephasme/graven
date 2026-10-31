@@ -7,5 +7,5 @@ export type PackageSpec = {
 /** Every workspace package, in dependency order: build and publish walk it front to back. */
 export const packages: readonly PackageSpec[] = [
   { name: "graven", siblingDependencies: [] },
-  { name: "graven-sql", siblingDependencies: ["@les-sherpas/graven"] },
+  { name: "graven-sql", siblingDependencies: ["@ephasme/graven"] },
 ];

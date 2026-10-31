@@ -1,7 +1,7 @@
 {
-  "name": "@les-sherpas/graven-sql",
+  "name": "@ephasme/graven-sql",
   "version": "0.3.2",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -21,10 +21,10 @@
   ],
   "sideEffects": false,
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "access": "public"
   },
   "dependencies": {
-    "@les-sherpas/graven": "workspace:*",
+    "@ephasme/graven": "workspace:*",
     "@date-fns/utc": "^2.1.1",
     "date-fns": "^4.4.0",
     "db-errors": "^0.2.3"
@@ -35,8 +35,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Les-Sherpas/graven.git",
+    "url": "git+https://github.com/Ephasme/graven.git",
     "directory": "packages/graven-sql"
   },
-  "description": "Postgres and MySQL/MariaDB event store for @les-sherpas/graven, on Kysely."
+  "description": "Postgres and MySQL/MariaDB event store for @ephasme/graven, on Kysely."
 }

@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 /**
- * Asserts every package's built `dist/index.js` imports its declared `@les-sherpas/*`
+ * Asserts every package's built `dist/index.js` imports its declared `@ephasme/*`
  * dependencies rather than inlining them. `bun build --packages external` alone does not
- * guarantee this: each package's dev-time `tsconfig.json` maps `@les-sherpas/*` to a
+ * guarantee this: each package's dev-time `tsconfig.json` maps `@ephasme/*` to a
  * sibling's `src/index.ts` via `paths`, so a build invocation missing `--external
- * '@les-sherpas/*'` silently duplicates the sibling's source (and its classes) into the
+ * '@ephasme/*'` silently duplicates the sibling's source (and its classes) into the
  * bundle instead of importing it — breaking `instanceof` across the package boundary for a
  * published consumer. See `scripts/build.ts`.
  */

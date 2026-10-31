@@ -41,12 +41,12 @@ Update the package list in all of:
 - the new package's `tsconfig.json` `paths`
 
 ## Key Conventions
-- Cross-package imports use `@les-sherpas/<name>`, never relative paths into a sibling.
+- Cross-package imports use `@ephasme/<name>`, never relative paths into a sibling.
 - Sibling deps are `"workspace:*"` in `dependencies`; `kysely` and `zod` are `peerDependencies`.
-- `scripts/build.ts` MUST keep `--external '@les-sherpas/*'` on both bundles; without it siblings get inlined and `instanceof` breaks across packages.
+- `scripts/build.ts` MUST keep `--external '@ephasme/*'` on both bundles; without it siblings get inlined and `instanceof` breaks across packages.
 - Postgres/MySQL branching lives only in `packages/graven-sql/src/dialect.ts`; other `graven-sql` files stay dialect-agnostic.
 
 ## Release
 - Never bump `version` by hand; add a changeset (`bun run changeset`). Both packages share one version (`fixed`).
-- Push to `main` opens/updates the "Version Packages" PR; merging it publishes to GitHub Packages (`.github/workflows/ci.yml` `release` job).
+- Push to `main` opens/updates the "Version Packages" PR; merging it publishes to npm (`.github/workflows/ci.yml` `release` job).
 - Publishing goes through `scripts/publish.ts`; never `changeset publish` (npm ships `workspace:*` verbatim).

@@ -35,12 +35,12 @@ for (const { name } of packages) {
       "--packages",
       "external",
       // `--packages external` only externalizes modules resolved through node_modules; each
-      // package's tsconfig `paths` maps `@les-sherpas/*` to a sibling's `src/index.ts`, so Bun
+      // package's tsconfig `paths` maps `@ephasme/*` to a sibling's `src/index.ts`, so Bun
       // otherwise follows that mapping and inlines the sibling's source (and its classes)
       // into this bundle. `--external` forces the pattern external regardless of how it
       // resolves, so the emitted bundle imports the sibling instead of duplicating it.
       "--external",
-      "@les-sherpas/*",
+      "@ephasme/*",
     ],
     dir,
   );
@@ -59,7 +59,7 @@ for (const { name } of packages) {
       "--packages",
       "external",
       "--external",
-      "@les-sherpas/*",
+      "@ephasme/*",
     ],
     dir,
   );
